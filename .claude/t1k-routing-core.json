@@ -1,0 +1,43 @@
+{
+  "registryVersion": 1,
+  "priority": 10,
+  "description": "Fallback routing — lowest priority. Engine-specific kits override via higher-priority fragments.",
+  "roles": {
+    "implementer": "t1k-fullstack-developer",
+    "tester": "t1k-tester",
+    "reviewer": "t1k-code-reviewer",
+    "debugger": "t1k-debugger",
+    "kit-developer": "t1k-kit-developer",
+    "brainstormer": "t1k-brainstormer",
+    "planner": "t1k-planner",
+    "docs-manager": "t1k-docs-manager",
+    "git-manager": "t1k-git-manager",
+    "project-manager": "t1k-project-manager",
+    "skills-manager": "t1k-skills-manager",
+    "t1k-brainstormer": "t1k-brainstormer",
+    "t1k-debugger": "t1k-debugger",
+    "t1k-docs-manager": "t1k-docs-manager",
+    "t1k-git-manager": "t1k-git-manager",
+    "t1k-kit-developer": "t1k-kit-developer",
+    "t1k-planner": "t1k-planner",
+    "t1k-project-manager": "t1k-project-manager",
+    "t1k-skills-manager": "t1k-skills-manager",
+    "t1k-tester": "t1k-tester"
+  },
+  "errorRecovery": {
+    "compilation": "implementer",
+    "test-failure": "t1k-tester",
+    "runtime": "t1k-debugger",
+    "performance": "optimizer"
+  },
+  "_doc-engine-roles": "Engine-specific roles (optimizer, environment, validator, shader, ui-developer, game-developer) intentionally excluded from core — provided by engine kit routing fragments (theonekit-unity, theonekit-cocos, theonekit-web, theonekit-rn, theonekit-designer, theonekit-nakama) at priority 90. Removing the default-to-general-purpose stub avoids silent wrong-agent fallback when an engine role keyword fires in a context without an engine kit installed. See #281.",
+  "_origin": {
+    "kit": "theonekit-core",
+    "repository": "The1Studio/theonekit-core",
+    "module": null,
+    "protected": true
+  },
+  "_generated": "2026-05-08T11:30:27.460Z",
+  "_generatedBy": "generate-routing-from-agents.cjs",
+  "_generatedFrom": "agent .md roles: frontmatter — edit agents/*.md instead of this file"
+}

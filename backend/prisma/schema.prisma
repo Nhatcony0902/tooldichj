@@ -1,0 +1,63 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model TranslationCache {
+  id             Int      @id @default(autoincrement())
+  textHash       String   // Hash SHA256 của sourceText để lập chỉ mục nhanh
+  sourceText     String
+  translatedText String
+  sourceLang     String
+  targetLang     String
+  createdAt      DateTime @default(now())
+
+  @@unique([textHash, sourceLang, targetLang])
+  @@index([textHash])
+}
+
+model User {
+  id               String     @id @default(uuid())
+  email            String     @unique
+  password         String
+  name             String     // Họ và tên người dùng
+  phone            String?    // Số điện thoại (tùy chọn)
+  avatarUrl        String?    // Ảnh đại diện (tùy chọn)
+  role             String     @default("USER") // USER, VIP, ADMIN
+  credits          Int        @default(100) // Tặng 100 credits khi đăng ký mới
+  mfaEnabled       Boolean    @default(false)
+  mfaSecret        String?
+  mfaPendingSecret String?
+  emailVerified           Boolean   @default(false)
+  emailVerifyOtp          String?
+  emailVerifyOtpExpiresAt DateTime?
+  emailVerifyLastSentAt   DateTime?
+  emailVerifyAttempts     Int       @default(0)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+  jobs             VideoJob[]
+}
+
+model VideoJob {
+  id              String   @id @default(uuid())
+  fileName        String
+  status          String   // PENDING, PROCESSING, COMPLETED, FAILED
+  progress        Int      @default(0) // Tiến độ 0-100%
+  stepDescription String   @default("Đang chờ...") // Trạng thái cụ thể của tiến trình
+  targetLang      String   @default("vi")
+  errorMessage    String?
+  subtitlesUrl    String?  // Đường dẫn đến file phụ đề .srt
+  outputVideoUrl  String?  // Đường dẫn đến file video đã chèn phụ đề
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

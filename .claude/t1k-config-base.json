@@ -1,0 +1,23 @@
+{
+  "kitName": "theonekit-core",
+  "workflowArtifactGate": {
+    "enabled": true,
+    "hardStages": [
+      "ship",
+      "push",
+      "pr",
+      "deploy"
+    ],
+    "softStages": [
+      "finalize",
+      "commit"
+    ],
+    "highRiskAutoStop": true
+  },
+  "_origin": {
+    "kit": "theonekit-core",
+    "repository": "The1Studio/theonekit-core",
+    "module": null,
+    "protected": true
+  }
+}

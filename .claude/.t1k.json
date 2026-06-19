@@ -1,0 +1,61 @@
+{
+  "kits": {
+    "TheOneKit Core": {
+      "installedSettings": {
+        "hooks": [
+          "hook:hook-runner.cjs:privacy-guard",
+          "hook:hook-runner.cjs:scout-block",
+          "hook:hook-runner.cjs:descriptive-name",
+          "hook:hook-runner.cjs:plan-write-guard",
+          "hook:hook-runner.cjs:secret-guard",
+          "hook:hook-runner.cjs:skill-commit-gate",
+          "hook:hook-runner.cjs:require-current-cli",
+          "hook:hook-runner.cjs:workflow-artifact-gate",
+          "hook:hook-runner.cjs:unity-process-guard",
+          "hook:hook-runner.cjs:team-create-preflight-gate",
+          "hook:hook-runner.cjs:pandadoc-send-gate",
+          "hook:hook-runner.cjs:task-description-model-badge",
+          "hook:hook-runner.cjs:generic-agent-detector",
+          "hook:hook-runner.cjs:telemetry-tool-tracker",
+          "hook:hook-runner.cjs:telemetry-kit-error-collector",
+          "hook:hook-runner.cjs:team-create-preflight-tracker",
+          "hook:hook-runner.cjs:kit-owned-file-modified",
+          "hook:hook-runner.cjs:telemetry-error-collector",
+          "hook:hook-runner.cjs:post-kit-update-commit",
+          "hook:hook-runner.cjs:contribution-capture",
+          "hook:hook-runner.cjs:telemetry-skill-tracker",
+          "hook:hook-runner.cjs:task-completed-handler",
+          "hook:hook-runner.cjs:check-kit-updates",
+          "hook:hook-runner.cjs:check-kit-update-failures",
+          "hook:hook-runner.cjs:check-cli-updates",
+          "hook:hook-runner.cjs:session-state",
+          "hook:hook-runner.cjs:project-detector",
+          "hook:hook-runner.cjs:generate-baseline-context",
+          "hook:hook-runner.cjs:check-mcp-health",
+          "hook:hook-runner.cjs:decision-tools-preload",
+          "hook:hook-runner.cjs:check-module-keywords",
+          "hook:hook-runner.cjs:check-ambiguous-fork-invocation",
+          "hook:hook-runner.cjs:prompt-telemetry",
+          "hook:hook-runner.cjs:lesson-queue-processor",
+          "hook:hook-runner.cjs:contribution-flush-nudge",
+          "hook:hook-runner.cjs:image-routing-human-mcp",
+          "hook:hook-runner.cjs:lesson-collector",
+          "hook:hook-runner.cjs:workflow-failure-detector",
+          "hook:hook-runner.cjs:subagent-uncommitted-guard",
+          "hook:hook-runner.cjs:telemetry-stop-reminder",
+          "hook:hook-runner.cjs:sync-back-rollup",
+          "hook:hook-runner.cjs:prompt-telemetry-flush",
+          "hook:hook-runner.cjs:notify-discord",
+          "hook:hook-runner.cjs:notify-desktop",
+          "hook:task-completed-handler.cjs",
+          "hook:teammate-idle-handler.cjs"
+        ],
+        "mcpServers": [],
+        "statusLineInstalled": true,
+        "envKeysInstalled": [
+          "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"
+        ]
+      }
+    }
+  }
+}

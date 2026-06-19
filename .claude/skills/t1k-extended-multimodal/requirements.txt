@@ -1,0 +1,11 @@
+# Python runtime dependencies for t1k-extended-multimodal.
+# Picked up by theonekit-release-action python-ci.yml lane.
+
+google-genai>=1.0
+requests>=2.31
+
+# Optional (guarded with try/except in source — present here only if you want
+# the full feature set):
+# python-dotenv>=1.0        # .env file loading (fallback in resolve_env)
+# Pillow>=10.0              # image size detection in media_optimizer
+# google-cloud-aiplatform   # Vertex AI client path in api_key_helper

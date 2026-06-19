@@ -1,0 +1,116 @@
+{
+  "registryVersion": 1,
+  "kitName": "theonekit-core",
+  "priority": 10,
+  "repos": {
+    "primary": "The1Studio/theonekit-core"
+  },
+  "cli": {
+    "repo": "The1Studio/theonekit-cli",
+    "npmPackage": "@the1studio/theonekit-cli"
+  },
+  "description": "Core layer — always available. No engine-specific context required.",
+  "context": {
+    "requiredPaths": [],
+    "requiredFeatures": [],
+    "description": "Core commands run in any context"
+  },
+  "features": {
+    "executionTrace": true,
+    "telemetry": true,
+    "autoUpdate": true,
+    "autoUpdateMajor": true,
+    "autoIssueSubmission": true,
+    "autoLessonSync": true,
+    "hookLogging": true,
+    "autoCommitKitSync": true,
+    "autoPushKitSync": true,
+    "imageAnalysisRouting": true
+  },
+  "autoIssueSubmission": {
+    "maxPerSession": 5,
+    "dedupeTTLDays": 7,
+    "dryRunEnv": "T1K_AUTO_ISSUE_DRY_RUN"
+  },
+  "autoLessonSync": {
+    "maxPerSession": 5,
+    "dedupeTTLDays": 7,
+    "dryRunEnv": "T1K_LESSON_SYNC_DRY_RUN"
+  },
+  "telemetry": {
+    "cloud": {
+      "enabled": true,
+      "endpoint": "https://t1k-telemetry.the1studio.org/ingest",
+      "auth": "github-token",
+      "org": "The1Studio",
+      "maxPromptLength": 2000,
+      "retentionDays": 90
+    }
+  },
+  "issueClaim": {
+    "labelName": "t1k:claim",
+    "bodyMarkerPrefix": "t1k-claim:",
+    "inScopeRepos": [
+      "The1Studio/theonekit-*",
+      "The1Studio/t1k-*",
+      "The1Studio/unity-mcp",
+      "The1Studio/cocos-mcp-server"
+    ],
+    "enforcementMode": "hard-block",
+    "stalenessDays": 14,
+    "adminMerge": {
+      "enabled": false,
+      "requireCiGreen": true,
+      "bypassReview": true
+    }
+  },
+  "mcp": {
+    "required": [
+      {
+        "name": "github",
+        "purpose": "GitHub issue/PR management for triage, sync-back, issue reporting",
+        "installCmd": "claude mcp add github",
+        "verifyTool": "mcp__github__"
+      },
+      {
+        "name": "context7",
+        "purpose": "Library/framework documentation lookup for planning and implementation",
+        "installCmd": "claude mcp add context7 --transport http -- https://mcp.context7.com/mcp",
+        "verifyTool": "mcp__context7__"
+      },
+      {
+        "name": "sequential-thinking",
+        "purpose": "Structured step-by-step analysis for problem-solving when stuck",
+        "installCmd": "claude mcp add sequential-thinking -- npx -y @modelcontextprotocol/server-sequential-thinking",
+        "verifyTool": "mcp__sequential-thinking__"
+      },
+      {
+        "name": "memory",
+        "purpose": "Cross-session knowledge persistence via knowledge graph",
+        "installCmd": "claude mcp add memory -- npx -y @modelcontextprotocol/server-memory",
+        "verifyTool": "mcp__memory__"
+      }
+    ],
+    "recommended": [],
+    "optional": [
+      {
+        "name": "playwright",
+        "purpose": "Browser automation for E2E testing and visual regression",
+        "installCmd": "claude mcp add playwright -- npx @playwright/mcp@latest --headless",
+        "verifyTool": "mcp__playwright__"
+      },
+      {
+        "name": "chrome-devtools",
+        "purpose": "Browser DevTools for console, network, and performance analysis",
+        "installCmd": "claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest",
+        "verifyTool": "mcp__chrome-devtools__"
+      }
+    ]
+  },
+  "_origin": {
+    "kit": "theonekit-core",
+    "repository": "The1Studio/theonekit-core",
+    "module": null,
+    "protected": true
+  }
+}

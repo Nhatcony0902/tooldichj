@@ -1,0 +1,40 @@
+# Dependencies
+**/node_modules/
+**/.pnp
+**.pnp.*
+**/.yarn/*
+
+# Build outputs
+**/dist/
+**/.next/
+**/out/
+**/build/
+**/*.tsbuildinfo
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Environment and secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+
+# Database (Prisma/SQLite)
+/backend/prisma/*.db
+/backend/prisma/*.db-journal
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# TheOneKit/Claude session state
+.claude/session-state/
+.claude/telemetry/
+.claude/*-resolved-config.json
+.skip-commit-gate

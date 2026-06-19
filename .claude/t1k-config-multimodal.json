@@ -1,0 +1,44 @@
+{
+  "registryVersion": 1,
+  "kitName": "theonekit-core",
+  "priority": 91,
+  "moduleScope": "t1k-extended-multimodal",
+  "description": "Multimodal skill config — model defaults for Gemini, Imagen, Veo, MiniMax.",
+  "multimodal": {
+    "gemini": {
+      "analysisModel": "gemini-2.5-flash",
+      "generationModel": "gemini-3.1-flash-image-preview",
+      "videoModel": "veo-3.1-generate-preview",
+      "proModel": "gemini-2.5-pro"
+    },
+    "imagen": {
+      "standardModel": "imagen-4.0-generate-001",
+      "ultraModel": "imagen-4.0-ultra-generate-001",
+      "fastModel": "imagen-4.0-fast-generate-001"
+    },
+    "minimax": {
+      "imageModel": "image-01",
+      "videoModel": "MiniMax-Hailuo-2.3",
+      "speechModel": "speech-2.8-hd",
+      "musicModel": "music-2.5"
+    }
+  },
+  "mcp": {
+    "required": [],
+    "recommended": [],
+    "optional": [
+      {
+        "name": "human-mcp",
+        "purpose": "In-loop multimodal analysis and generation — image/video analysis, Gemini image gen, video gen. Complements the t1k:extended-multimodal skill for interactive (non-batch) use. Requires GOOGLE_API_KEY env var.",
+        "installCmd": "claude mcp add human-mcp -- npx -y github:The1Studio/human-mcp#v2.15.1",
+        "verifyTool": "mcp__human-mcp__eyes_analyze"
+      }
+    ]
+  },
+  "_origin": {
+    "kit": "theonekit-core",
+    "repository": "The1Studio/theonekit-core",
+    "module": null,
+    "protected": true
+  }
+}

@@ -22,6 +22,10 @@ pipeline {
                     // Cài đặt dependencies
                     sh 'npm install'
                     
+                    // Khởi tạo Prisma Client
+                    echo 'Đang khởi tạo Prisma Client...'
+                    sh 'npx prisma generate'
+                    
                     // Chạy linter kiểm tra code
                     echo 'Đang chạy Lint kiểm tra chất lượng code Backend...'
                     sh 'npm run lint'

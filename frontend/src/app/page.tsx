@@ -20,6 +20,7 @@ interface VideoJob {
   stepDescription: string;
   targetLang: string;
   subtitlesUrl?: string;
+  errorMessage?: string;
   createdAt: string;
 }
 
@@ -1087,8 +1088,13 @@ export default function Home() {
                           <div className={styles.progressBar} style={{ width: `${job.progress}%` }} />
                         </div>
 
-                        <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>
-                          {job.stepDescription}
+                        <p
+                          style={{
+                            fontSize: "0.8rem",
+                            color: job.status === "FAILED" ? "var(--error)" : "var(--text-secondary)",
+                          }}
+                        >
+                          {job.status === "FAILED" ? job.errorMessage || job.stepDescription : job.stepDescription}
                         </p>
 
                         <div className={styles.jobDetails}>

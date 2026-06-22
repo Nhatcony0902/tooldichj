@@ -16,7 +16,9 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
+import * as path from 'path';
 import { TranslationService } from './translation.service';
+import { QueueService } from './queue.service';
 import { TranslateDto } from './dto/translate.dto';
 import { CreateVideoJobDto } from './dto/create-video-job.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -33,7 +35,8 @@ interface RequestWithUser {
   };
 }
 
-const MAX_FILE_SIZE = parseInt(process.env.MAX_UPLOAD_MB || '100', 10) * 1024 * 1024;
+const MAX_FILE_SIZE =
+  parseInt(process.env.MAX_UPLOAD_MB || '100', 10) * 1024 * 1024;
 
 const OUTPUT_KINDS = ['srt', 'video', 'audio'] as const;
 type OutputKind = (typeof OUTPUT_KINDS)[number];
@@ -42,6 +45,7 @@ type OutputKind = (typeof OUTPUT_KINDS)[number];
 export class TranslationController {
   constructor(
     private readonly translationService: TranslationService,
+    private readonly queueService: QueueService,
     @Inject(STORAGE_PROVIDER)
     private readonly storage: IStorageProvider,
   ) {}
@@ -119,7 +123,11 @@ export class TranslationController {
     }
 
     try {
-      const storageKey = `uploads/${Date.now()}-${file.originalname}`;
+      // basename() strips any directory components a crafted originalname
+      // could carry (e.g. "../../etc/passwd"), so the storage key can never
+      // resolve outside the upload directory.
+      const safeName = path.basename(file.originalname);
+      const storageKey = `uploads/${Date.now()}-${safeName}`;
       await this.storage.save(file.buffer, storageKey);
 
       const job = await this.translationService.createVideoJob(userId, {
@@ -128,6 +136,7 @@ export class TranslationController {
         targetLang: dto.targetLang,
         outputMode: dto.outputMode || 'burn',
       });
+      await this.queueService.enqueueVideoJob(job.id);
       return { success: true, job };
     } catch (error: unknown) {
       const errorMessage =

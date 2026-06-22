@@ -15,9 +15,12 @@ export class LocalDiskStorageProvider implements IStorageProvider {
   }
 
   private resolvePath(key: string): string {
-    const resolved = path.resolve(this.rootDir, key);
     const root = path.resolve(this.rootDir);
-    if (!resolved.startsWith(root)) {
+    const resolved = path.resolve(root, key);
+    // A plain startsWith(root) check is bypassable by a sibling directory
+    // that merely shares the root as a string prefix (e.g. "root-evil").
+    // Requiring an exact match or a path-separator boundary closes that.
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
       throw new Error('Path traversal attempt detected');
     }
     return resolved;

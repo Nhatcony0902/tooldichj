@@ -49,3 +49,7 @@ browser videoFile (Blob)
 ## Rollback
 
 Revert controller to old DTO + drop `inputStorageKey` migration (down migration). Storage dir is gitignored; safe to delete.
+
+## Known limitation (deferred, not fixed)
+
+The implemented upload path deviates from this phase's own mitigation above: `FileInterceptor('video')` uses multer's default **memory** storage (`file.buffer`), not disk storage, and `IStorageProvider.save`/`read` are buffer-based (no streaming variant). Phase 2's worker inherits this — it buffers whole input/output videos in memory rather than streaming them. Bounded today by `MAX_UPLOAD_MB` (default 100MB) and worker concurrency (2), so worst case is ~2 large buffers in flight at once. User-confirmed 2026-06-22: defer a streaming I/O rework (multer disk storage + stream-based `IStorageProvider` methods) to a future hardening pass (Phase 6 or later) rather than redoing the already-shipped Phase 1 interface now.

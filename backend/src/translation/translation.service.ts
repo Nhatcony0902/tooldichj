@@ -40,6 +40,7 @@ export class TranslationService {
     text: string,
     sourceLang: string,
     targetLang: string,
+    chargeCredit = true,
   ): Promise<string> {
     if (!text || text.trim() === '') {
       return '';
@@ -83,7 +84,9 @@ export class TranslationService {
     }
 
     if (cachedTranslation) {
-      await this.deductCredit(userId, 1);
+      if (chargeCredit) {
+        await this.deductCredit(userId, 1);
+      }
       return cachedTranslation;
     }
 
@@ -129,7 +132,9 @@ ${text}`;
         this.logger.warn(`Failed to write to cache: ${message}`);
       }
 
-      await this.deductCredit(userId, 1);
+      if (chargeCredit) {
+        await this.deductCredit(userId, 1);
+      }
     }
 
     return translatedText;

@@ -44,20 +44,51 @@ model User {
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
   jobs             VideoJob[]
+  topupRequests    CreditTopupRequest[]
+  passwordResetOtp          String?
+  passwordResetOtpExpiresAt DateTime?
 }
 
 model VideoJob {
   id              String   @id @default(uuid())
   fileName        String
+  inputStorageKey String?
   status          String   // PENDING, PROCESSING, COMPLETED, FAILED
-  progress        Int      @default(0) // Tiến độ 0-100%
-  stepDescription String   @default("Đang chờ...") // Trạng thái cụ thể của tiến trình
+  progress        Int      @default(0)
+  stepDescription String   @default("Đang chờ...")
   targetLang      String   @default("vi")
+  outputMode      String   @default("burn") // burn | srt
   errorMessage    String?
-  subtitlesUrl    String?  // Đường dẫn đến file phụ đề .srt
-  outputVideoUrl  String?  // Đường dẫn đến file video đã chèn phụ đề
+  subtitlesUrl    String?
+  outputVideoUrl  String?
+  outputAudioUrl  String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   userId          String
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model TtsCache {
+  id        Int      @id @default(autoincrement())
+  textHash  String
+  voice     String
+  lang      String
+  audioKey  String
+  createdAt DateTime @default(now())
+
+  @@unique([textHash, voice, lang])
+  @@index([textHash])
+}
+
+model CreditTopupRequest {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount      Int
+  orderCode   String   @unique
+  status      String   @default("PENDING") // PENDING, CONFIRMED, REJECTED
+  note        String?
+  confirmedBy String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }

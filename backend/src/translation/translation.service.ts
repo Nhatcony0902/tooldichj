@@ -2,7 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { GoogleGenAI } from '@google/genai';
 import * as crypto from 'crypto';
-import { CreateVideoJobDto } from './dto/create-video-job.dto';
+
+interface CreateVideoJobParams {
+  fileName: string;
+  inputStorageKey: string;
+  targetLang: string;
+  outputMode: string;
+}
 
 @Injectable()
 export class TranslationService {
@@ -21,9 +27,12 @@ export class TranslationService {
     }
   }
 
-  // Tạo hash SHA256 cho văn bản để lập chỉ mục tìm kiếm cache
-  private getHash(text: string): string {
+  getHash(text: string): string {
     return crypto.createHash('sha256').update(text).digest('hex');
+  }
+
+  getAi(): GoogleGenAI | null {
+    return this.ai;
   }
 
   async translate(
@@ -36,7 +45,6 @@ export class TranslationService {
       return '';
     }
 
-    // 0. Kiểm tra credits của người dùng
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { credits: true },
@@ -54,7 +62,6 @@ export class TranslationService {
     const sLang = sourceLang.toLowerCase().trim();
     const tLang = targetLang.toLowerCase().trim();
 
-    // 1. Kiểm tra cache trong DB
     let cachedTranslation = '';
     try {
       const cached = await this.prisma.translationCache.findUnique({
@@ -75,19 +82,17 @@ export class TranslationService {
       this.logger.error('Failed to query database cache:', err);
     }
 
-    // Nếu có cache, trả về luôn và trừ credit
     if (cachedTranslation) {
       await this.deductCredit(userId, 1);
       return cachedTranslation;
     }
 
-    // 2. Dịch thuật (Gemini hoặc Fallback)
     let translatedText = '';
 
     if (this.ai) {
       try {
-        const prompt = `Translate the following text from "${sourceLang}" to "${targetLang}". 
-Return ONLY the exact translated text. Do not add any introductory phrases, explanations, notes, or extra markdown formatting. 
+        const prompt = `Translate the following text from "${sourceLang}" to "${targetLang}".
+Return ONLY the exact translated text. Do not add any introductory phrases, explanations, notes, or extra markdown formatting.
 Maintain the original format and line breaks.
 
 Text to translate:
@@ -108,7 +113,6 @@ ${text}`;
       translatedText = this.mockTranslate(text, targetLang);
     }
 
-    // 3. Lưu vào cache và trừ credit
     if (translatedText) {
       try {
         await this.prisma.translationCache.create({
@@ -131,7 +135,7 @@ ${text}`;
     return translatedText;
   }
 
-  private async deductCredit(userId: string, amount: number) {
+  async deductCredit(userId: string, amount: number) {
     try {
       await this.prisma.user.update({
         where: { id: userId },
@@ -147,10 +151,9 @@ ${text}`;
     return `[Mock Dịch sang ${targetLang}]: ${text}`;
   }
 
-  async createVideoJob(userId: string, dto: CreateVideoJobDto) {
-    const { fileName, targetLang } = dto;
+  async createVideoJob(userId: string, params: CreateVideoJobParams) {
+    const { fileName, inputStorageKey, targetLang, outputMode } = params;
 
-    // Kiểm tra credits của người dùng (dịch video cần ít nhất 10 credits)
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { credits: true },
@@ -164,11 +167,12 @@ ${text}`;
       );
     }
 
-    // Tạo job mới trong hàng đợi PENDING
     const job = await this.prisma.videoJob.create({
       data: {
         fileName,
+        inputStorageKey,
         targetLang,
+        outputMode,
         status: 'PENDING',
         progress: 0,
         stepDescription: 'Đang xếp hàng chờ xử lý...',
@@ -183,6 +187,12 @@ ${text}`;
     return this.prisma.videoJob.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async getVideoJobById(jobId: string) {
+    return this.prisma.videoJob.findUnique({
+      where: { id: jobId },
     });
   }
 }

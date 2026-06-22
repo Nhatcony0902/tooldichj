@@ -510,41 +510,36 @@ export default function Home() {
     e.preventDefault();
     if (!token) return;
 
-    let name = "Video_Source.mp4";
-    if (videoFile) {
-      name = videoFile.name;
-    } else if (videoUrl) {
-      try {
-        const urlObj = new URL(videoUrl);
-        name = urlObj.hostname + "_video.mp4";
-      } catch {
-        name = "URL_Video.mp4";
-      }
-    } else {
-      showToast("error", "Vui lòng tải lên file video hoặc dán link video!");
+    if (!videoFile) {
+      showToast("error", "Vui lòng tải lên file video!");
       return;
     }
 
     try {
+      const formData = new FormData();
+      formData.append("video", videoFile);
+      formData.append("targetLang", targetLangVideo);
+
+      const outputSelect = document.querySelector<HTMLSelectElement>('[data-output-mode]');
+      if (outputSelect) {
+        formData.append("outputMode", outputSelect.value);
+      }
+
       const response = await fetch("http://localhost:3001/translation/video-job", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          fileName: name,
-          targetLang: targetLangVideo,
-        }),
+        body: formData,
       });
       const data = await response.json();
 
       if (data.success) {
-        // Làm trống input
         setVideoFile(null);
         setVideoUrl("");
-        
-        // Refresh danh sách jobs và thông tin user
+        const fileInput = document.getElementById("fileInput") as HTMLInputElement;
+        if (fileInput) fileInput.value = "";
+
         fetchJobs(token);
         fetchUserMe(token);
         showToast("success", "Đã thêm video vào hàng đợi dịch thuật!");
@@ -1037,7 +1032,7 @@ export default function Home() {
                     </div>
                     <div className={styles.inputGroup}>
                       <span className={styles.inputLabel}>Đầu ra</span>
-                      <select className={styles.langSelect} style={{ width: "100%" }}>
+                      <select className={styles.langSelect} style={{ width: "100%" }} data-output-mode>
                         <option value="burn">Chèn sub vào Video</option>
                         <option value="srt">Chỉ xuất file .SRT</option>
                       </select>
@@ -1100,10 +1095,26 @@ export default function Home() {
                           <span>Mục tiêu: {job.targetLang.toUpperCase()}</span>
                           {job.status === "COMPLETED" ? (
                             <a
-                              href="#"
+                              href={`http://localhost:3001/translation/output/${job.id}/srt`}
                               onClick={(e) => {
                                 e.preventDefault();
-                                showToast("success", "Đã tải xuống file phụ đề .srt cho " + job.fileName);
+                                if (!token) return;
+                                fetch(`http://localhost:3001/translation/output/${job.id}/srt`, {
+                                  headers: { Authorization: `Bearer ${token}` },
+                                })
+                                  .then((res) => {
+                                    if (!res.ok) throw new Error("Download failed");
+                                    return res.blob();
+                                  })
+                                  .then((blob) => {
+                                    const url = URL.createObjectURL(blob);
+                                    const a = document.createElement("a");
+                                    a.href = url;
+                                    a.download = `${job.fileName}.srt`;
+                                    a.click();
+                                    URL.revokeObjectURL(url);
+                                  })
+                                  .catch(() => showToast("error", "Chưa có file SRT để tải"));
                               }}
                               style={{ color: "var(--success)", fontWeight: 600 }}
                             >

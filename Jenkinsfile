@@ -12,6 +12,14 @@ pipeline {
                 echo 'Bắt đầu quy trình CI/CD cho ToolDichJ...'
                 sh 'node -v'
                 sh 'npm -v'
+
+                // ffmpeg là yêu cầu bắt buộc cho pipeline xử lý video (trích xuất audio, chèn sub, lồng tiếng)
+                echo 'Kiểm tra / cài đặt ffmpeg...'
+                sh '''
+                    if ! ffmpeg -version > /dev/null 2>&1; then
+                        (apt-get update && apt-get install -y ffmpeg) || echo "CẢNH BÁO: Không cài được ffmpeg trên Jenkins agent này — pipeline xử lý video sẽ báo lỗi lúc runtime (xem GET /health)."
+                    fi
+                '''
             }
         }
 

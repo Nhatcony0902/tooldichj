@@ -47,6 +47,7 @@ model User {
   topupRequests    CreditTopupRequest[]
   passwordResetOtp          String?
   passwordResetOtpExpiresAt DateTime?
+  preferredVoiceId          String?
 }
 
 model VideoJob {
@@ -70,14 +71,13 @@ model VideoJob {
 }
 
 model TtsCache {
-  id        Int      @id @default(autoincrement())
-  textHash  String
-  voice     String
-  lang      String
-  audioKey  String
-  createdAt DateTime @default(now())
+  id              Int      @id @default(autoincrement())
+  textHash        String
+  voiceId         String
+  audioStorageKey String
+  createdAt       DateTime @default(now())
 
-  @@unique([textHash, voice, lang])
+  @@unique([textHash, voiceId])
   @@index([textHash])
 }
 

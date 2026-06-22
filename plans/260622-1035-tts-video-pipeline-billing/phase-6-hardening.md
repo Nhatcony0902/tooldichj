@@ -34,6 +34,7 @@ Close the gaps `CLAUDE.md` mandates but the codebase lacks: rate limiting, cachi
 ### 6e. Cleanup items noticed
 - Stray `backend/dev.db` sqlite file (schema is postgres-only) — confirm `@prisma/adapter-better-sqlite3` / `better-sqlite3` are unused at runtime, then propose removal (FLAG to user, do not silently delete — `rules/development-principles.md` Pre-Delete Reference Check).
 - Deprecated fake fields on `VideoJob` (`subtitlesUrl` as `/downloads/...`) — migrate consumers to storage-key fields, then drop.
+- **Known limitation (pre-existing, deferred, not fixed in Phase 3):** `backend/src/credit/credit.service.ts#deductCredit()` silently swallows DB errors (catches, logs via `Logger.error`, returns `void`) — the caller (`TranslationService`, `TtsService`) has no way to know a deduction failed, so a user could in theory consume a paid feature without being charged if the DB write fails. Verified via `git show <initial-commit>:...` that this behavior predates Phase 3 (present since the project's first commit, originally inline in `TranslationService`); Phase 3 only relocated it into its own module without changing behavior. Decided with the user (2026-06-22): leave as-is for now — fixing it properly means changing observable error behavior for every existing caller across Phases 0–3, which is bigger than any single phase's scope. Revisit here in Phase 6 alongside the broader error-hygiene pass.
 
 ## Verification (success criteria)
 

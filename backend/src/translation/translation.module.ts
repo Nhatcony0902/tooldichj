@@ -5,10 +5,11 @@ import { PrismaService } from '../prisma.service';
 import { QueueService } from './queue.service';
 import { StorageModule } from '../storage/storage.module';
 import { QueueModule } from '../queue/queue.module';
+import { CreditModule } from '../credit/credit.module';
 import { VideoPipelineWorker } from './pipeline/video-pipeline.worker';
 
 @Module({
-  imports: [StorageModule, QueueModule],
+  imports: [StorageModule, QueueModule, CreditModule],
   controllers: [TranslationController],
   providers: [
     TranslationService,

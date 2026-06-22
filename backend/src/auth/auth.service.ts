@@ -240,6 +240,7 @@ export class AuthService {
         name: user.name,
         role: user.role,
         credits: user.credits,
+        preferredVoiceId: user.preferredVoiceId,
       },
     };
   }
@@ -292,6 +293,7 @@ export class AuthService {
           name: user.name,
           role: user.role,
           credits: user.credits,
+          preferredVoiceId: user.preferredVoiceId,
         },
       };
     } catch (err: any) {
@@ -420,6 +422,7 @@ export class AuthService {
         role: true,
         credits: true,
         mfaEnabled: true,
+        preferredVoiceId: true,
       },
     });
     if (!user) {

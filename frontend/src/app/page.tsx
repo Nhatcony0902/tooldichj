@@ -31,6 +31,14 @@ interface User {
   role?: string;
   credits: number;
   mfaEnabled?: boolean;
+  preferredVoiceId?: string | null;
+}
+
+interface Voice {
+  id: string;
+  displayName: string;
+  style: string;
+  sampleUrl: string;
 }
 
 export default function Home() {
@@ -85,6 +93,12 @@ export default function Home() {
   const [isTranslating, setIsTranslating] = useState(false);
   const [history, setHistory] = useState<TranslationHistory[]>([]);
 
+  // TTS Voice States
+  const [voices, setVoices] = useState<Voice[]>([]);
+  const [selectedVoiceId, setSelectedVoiceId] = useState("Kore");
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
+
   // Video Translation States
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState("");
@@ -126,6 +140,9 @@ export default function Home() {
       if (response.ok) {
         setUser(data);
         setIsLoggedIn(true);
+        if (data.preferredVoiceId) {
+          setSelectedVoiceId(data.preferredVoiceId);
+        }
       } else {
         // Token hết hạn hoặc không hợp lệ
         handleLogout();
@@ -152,6 +169,94 @@ export default function Home() {
     }
   }, []);
 
+  // Fetch danh mục giọng đọc TTS (chỉ cần 1 lần)
+  const fetchVoices = useCallback(async (authToken: string) => {
+    try {
+      const response = await fetch("http://localhost:3001/tts/voices", {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await response.json();
+      if (data.success) {
+        setVoices(data.voices);
+      }
+    } catch (err) {
+      console.error("Error fetching voice catalog:", err);
+    }
+  }, []);
+
+  // Phát một blob audio (dùng chung cho Listen và preview giọng đọc)
+  const playAudioBlob = async (blob: Blob) => {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.onended = () => URL.revokeObjectURL(url);
+    await audio.play();
+  };
+
+  // Nghe bản dịch văn bản bằng giọng đã chọn (1 Credit, cache theo text+voice)
+  const handleListen = async () => {
+    if (!outputText.trim() || !token || isSpeaking) return;
+    setIsSpeaking(true);
+    try {
+      const response = await fetch("http://localhost:3001/tts/speak", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ text: outputText, voiceId: selectedVoiceId }),
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        showToast("error", data.error || "Không thể tạo giọng đọc");
+        return;
+      }
+      await playAudioBlob(await response.blob());
+      fetchUserMe(token);
+    } catch {
+      showToast("error", "Lỗi kết nối server khi tạo giọng đọc!");
+    } finally {
+      setIsSpeaking(false);
+    }
+  };
+
+  // Nghe thử mẫu giọng đọc (miễn phí, không trừ Credits)
+  const handlePreviewVoice = async (voiceId: string) => {
+    if (!token || previewingVoiceId) return;
+    setPreviewingVoiceId(voiceId);
+    try {
+      const response = await fetch(`http://localhost:3001/tts/sample/${voiceId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        showToast("error", "Không thể tải mẫu giọng đọc");
+        return;
+      }
+      await playAudioBlob(await response.blob());
+    } catch {
+      showToast("error", "Lỗi kết nối server khi tải mẫu giọng đọc!");
+    } finally {
+      setPreviewingVoiceId(null);
+    }
+  };
+
+  // Chọn giọng đọc mặc định và lưu lại cho lần sau
+  const handleVoiceChange = async (voiceId: string) => {
+    setSelectedVoiceId(voiceId);
+    if (!token) return;
+    try {
+      await fetch("http://localhost:3001/tts/preferred-voice", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ voiceId }),
+      });
+    } catch (err) {
+      console.error("Error saving preferred voice:", err);
+    }
+  };
+
   // Khởi động khi mount
   useEffect(() => {
     const savedToken = localStorage.getItem("tooldichj_token");
@@ -161,6 +266,7 @@ export default function Home() {
         setToken(savedToken);
         fetchUserMe(savedToken);
         fetchJobs(savedToken);
+        fetchVoices(savedToken);
       } else {
         setIsAuthLoading(false);
       }
@@ -168,7 +274,7 @@ export default function Home() {
         setHistory(JSON.parse(savedHistory));
       }
     }, 0);
-  }, [fetchUserMe, fetchJobs]);
+  }, [fetchUserMe, fetchJobs, fetchVoices]);
 
   // Polling để cập nhật tiến độ video job
   useEffect(() => {
@@ -310,12 +416,16 @@ export default function Home() {
           setToken(data.accessToken);
           setUser(data.user);
           setIsLoggedIn(true);
+          if (data.user.preferredVoiceId) {
+            setSelectedVoiceId(data.user.preferredVoiceId);
+          }
           setAuthEmail("");
           setAuthPassword("");
           setAuthName("");
           setAuthPhone("");
           setAuthConfirmPassword("");
           fetchJobs(data.accessToken);
+          fetchVoices(data.accessToken);
         } else {
           showToast(
             "success",
@@ -362,6 +472,9 @@ export default function Home() {
         setToken(data.accessToken);
         setUser(data.user);
         setIsLoggedIn(true);
+        if (data.user.preferredVoiceId) {
+          setSelectedVoiceId(data.user.preferredVoiceId);
+        }
         setMfaRequired(false);
         setTempToken(null);
         setMfaCode("");
@@ -372,6 +485,7 @@ export default function Home() {
         setAuthConfirmPassword("");
         showToast("success", "Đăng nhập thành công!");
         fetchJobs(data.accessToken);
+        fetchVoices(data.accessToken);
       } else {
         setAuthError(data.message || data.error || "Mã xác thực 2 lớp (MFA) không chính xác!");
       }
@@ -944,6 +1058,36 @@ export default function Home() {
                   readOnly
                   value={outputText}
                 />
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginTop: "0.5rem" }}>
+                  <select
+                    className={styles.langSelect}
+                    value={selectedVoiceId}
+                    onChange={(e) => handleVoiceChange(e.target.value)}
+                    title="Chọn giọng đọc"
+                  >
+                    {voices.map((voice) => (
+                      <option key={voice.id} value={voice.id}>
+                        {voice.displayName} ({voice.style})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className={styles.tabButton}
+                    onClick={() => handlePreviewVoice(selectedVoiceId)}
+                    disabled={previewingVoiceId === selectedVoiceId}
+                    title="Nghe thử giọng đọc (miễn phí)"
+                  >
+                    {previewingVoiceId === selectedVoiceId ? "..." : "🔉 Thử giọng"}
+                  </button>
+                  <button
+                    className={styles.translateButton}
+                    onClick={handleListen}
+                    disabled={!outputText.trim() || isSpeaking}
+                    title="Nghe bản dịch (1 Credit)"
+                  >
+                    {isSpeaking ? "Đang tạo..." : "🔊 Nghe (1 Credit)"}
+                  </button>
+                </div>
                 {history.length > 0 && (
                   <div className={styles.historySection}>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem" }}>

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { CreditService } from '../credit/credit.service';
 import { GoogleGenAI } from '@google/genai';
 import * as crypto from 'crypto';
 
@@ -15,7 +16,10 @@ export class TranslationService {
   private readonly logger = new Logger(TranslationService.name);
   private ai: GoogleGenAI | null = null;
 
-  constructor(private prisma: PrismaService) {
+  constructor(
+    private prisma: PrismaService,
+    private readonly creditService: CreditService,
+  ) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (apiKey) {
       this.ai = new GoogleGenAI({ apiKey });
@@ -85,7 +89,7 @@ export class TranslationService {
 
     if (cachedTranslation) {
       if (chargeCredit) {
-        await this.deductCredit(userId, 1);
+        await this.creditService.deductCredit(userId, 1);
       }
       return cachedTranslation;
     }
@@ -133,23 +137,11 @@ ${text}`;
       }
 
       if (chargeCredit) {
-        await this.deductCredit(userId, 1);
+        await this.creditService.deductCredit(userId, 1);
       }
     }
 
     return translatedText;
-  }
-
-  async deductCredit(userId: string, amount: number) {
-    try {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { credits: { decrement: amount } },
-      });
-      this.logger.log(`Deducted ${amount} credit(s) from user: ${userId}`);
-    } catch (err) {
-      this.logger.error(`Failed to deduct credits for user ${userId}:`, err);
-    }
   }
 
   private mockTranslate(text: string, targetLang: string): string {

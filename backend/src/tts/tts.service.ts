@@ -4,7 +4,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { PrismaService } from '../prisma.service';
-import { TranslationService } from '../translation/translation.service';
+import { GeminiClientService } from '../gemini/gemini-client.service';
 import { CreditService } from '../credit/credit.service';
 import {
   STORAGE_PROVIDER,
@@ -30,7 +30,7 @@ export class TtsService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly translationService: TranslationService,
+    private readonly geminiClient: GeminiClientService,
     private readonly creditService: CreditService,
     @Inject(STORAGE_PROVIDER) private readonly storage: IStorageProvider,
   ) {}
@@ -79,7 +79,7 @@ export class TtsService {
     text: string,
     voiceId: string,
   ): Promise<SynthesizeResult> {
-    const textHash = this.translationService.getHash(text);
+    const textHash = this.geminiClient.getHash(text);
 
     const cached = await this.prisma.ttsCache.findUnique({
       where: { textHash_voiceId: { textHash, voiceId } },
@@ -178,7 +178,7 @@ export class TtsService {
     text: string,
     voiceId: string,
   ): Promise<TtsAudio> {
-    const ai = this.translationService.getAi();
+    const ai = this.geminiClient.getAi();
     if (!ai) {
       this.logger.warn(
         'GEMINI_API_KEY is not defined. Using mock TTS fallback.',

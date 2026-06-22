@@ -6,10 +6,12 @@ import { QueueService } from './queue.service';
 import { StorageModule } from '../storage/storage.module';
 import { QueueModule } from '../queue/queue.module';
 import { CreditModule } from '../credit/credit.module';
+import { GeminiModule } from '../gemini/gemini.module';
+import { TtsModule } from '../tts/tts.module';
 import { VideoPipelineWorker } from './pipeline/video-pipeline.worker';
 
 @Module({
-  imports: [StorageModule, QueueModule, CreditModule],
+  imports: [StorageModule, QueueModule, CreditModule, GeminiModule, TtsModule],
   controllers: [TranslationController],
   providers: [
     TranslationService,

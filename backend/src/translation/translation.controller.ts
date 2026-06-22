@@ -26,6 +26,12 @@ import {
   STORAGE_PROVIDER,
   type IStorageProvider,
 } from '../storage/storage.interface';
+import {
+  OUTPUT_MODES,
+  isValidOutputMode,
+  outputModeIncludesDub,
+} from './pipeline/output-mode';
+import { isValidVoiceId } from '../tts/voices.config';
 
 interface RequestWithUser {
   user: {
@@ -121,6 +127,19 @@ export class TranslationController {
     if (!dto.targetLang) {
       throw new BadRequestException('targetLang is required');
     }
+    const outputMode = dto.outputMode || 'burn';
+    if (!isValidOutputMode(outputMode)) {
+      throw new BadRequestException(
+        `Invalid outputMode "${outputMode}". Must be one of: ${OUTPUT_MODES.join(', ')}`,
+      );
+    }
+    if (outputModeIncludesDub(outputMode)) {
+      if (!dto.dubVoiceId || !isValidVoiceId(dto.dubVoiceId)) {
+        throw new BadRequestException(
+          'A valid dubVoiceId is required when outputMode includes dubbing',
+        );
+      }
+    }
 
     try {
       // basename() strips any directory components a crafted originalname
@@ -134,7 +153,8 @@ export class TranslationController {
         fileName: file.originalname,
         inputStorageKey: storageKey,
         targetLang: dto.targetLang,
-        outputMode: dto.outputMode || 'burn',
+        outputMode,
+        dubVoiceId: outputModeIncludesDub(outputMode) ? dto.dubVoiceId : null,
       });
       await this.queueService.enqueueVideoJob(job.id);
       return { success: true, job };

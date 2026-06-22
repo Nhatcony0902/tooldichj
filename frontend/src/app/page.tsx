@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import styles from "./page.module.css";
+import VoiceSelector, { type Voice } from "./components/VoiceSelector";
 
 interface TranslationHistory {
   id: string;
@@ -19,7 +20,10 @@ interface VideoJob {
   progress: number;
   stepDescription: string;
   targetLang: string;
+  outputMode?: string;
   subtitlesUrl?: string;
+  outputVideoUrl?: string | null;
+  outputAudioUrl?: string | null;
   errorMessage?: string;
   createdAt: string;
 }
@@ -32,13 +36,6 @@ interface User {
   credits: number;
   mfaEnabled?: boolean;
   preferredVoiceId?: string | null;
-}
-
-interface Voice {
-  id: string;
-  displayName: string;
-  style: string;
-  sampleUrl: string;
 }
 
 export default function Home() {
@@ -103,6 +100,8 @@ export default function Home() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState("");
   const [targetLangVideo, setTargetLangVideo] = useState("vi");
+  const [outputModeVideo, setOutputModeVideo] = useState("burn");
+  const [dubVoiceIdVideo, setDubVoiceIdVideo] = useState("Kore");
   const [jobs, setJobs] = useState<VideoJob[]>([]);
 
   // Ref to hold polling interval
@@ -634,10 +633,9 @@ export default function Home() {
       const formData = new FormData();
       formData.append("video", videoFile);
       formData.append("targetLang", targetLangVideo);
-
-      const outputSelect = document.querySelector<HTMLSelectElement>('[data-output-mode]');
-      if (outputSelect) {
-        formData.append("outputMode", outputSelect.value);
+      formData.append("outputMode", outputModeVideo);
+      if (outputModeVideo === "dub" || outputModeVideo === "burn+dub") {
+        formData.append("dubVoiceId", dubVoiceIdVideo);
       }
 
       const response = await fetch("http://localhost:3001/translation/video-job", {
@@ -664,6 +662,27 @@ export default function Home() {
     } catch {
       showToast("error", "Lỗi kết nối server khi tạo video job!");
     }
+  };
+
+  // Tải xuống một output đã hoàn tất của video job (srt/video/audio)
+  const handleDownloadOutput = (jobId: string, kind: "srt" | "video" | "audio", filename: string) => {
+    if (!token) return;
+    fetch(`http://localhost:3001/translation/output/${jobId}/${kind}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Download failed");
+        return res.blob();
+      })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      })
+      .catch(() => showToast("error", "Chưa có file để tải"));
   };
 
   const handleSwapLanguages = () => {
@@ -1059,26 +1078,13 @@ export default function Home() {
                   value={outputText}
                 />
                 <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginTop: "0.5rem" }}>
-                  <select
-                    className={styles.langSelect}
-                    value={selectedVoiceId}
-                    onChange={(e) => handleVoiceChange(e.target.value)}
-                    title="Chọn giọng đọc"
-                  >
-                    {voices.map((voice) => (
-                      <option key={voice.id} value={voice.id}>
-                        {voice.displayName} ({voice.style})
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    className={styles.tabButton}
-                    onClick={() => handlePreviewVoice(selectedVoiceId)}
-                    disabled={previewingVoiceId === selectedVoiceId}
-                    title="Nghe thử giọng đọc (miễn phí)"
-                  >
-                    {previewingVoiceId === selectedVoiceId ? "..." : "🔉 Thử giọng"}
-                  </button>
+                  <VoiceSelector
+                    voices={voices}
+                    selectedVoiceId={selectedVoiceId}
+                    onChange={handleVoiceChange}
+                    onPreview={handlePreviewVoice}
+                    previewingVoiceId={previewingVoiceId}
+                  />
                   <button
                     className={styles.translateButton}
                     onClick={handleListen}
@@ -1177,12 +1183,32 @@ export default function Home() {
                     </div>
                     <div className={styles.inputGroup}>
                       <span className={styles.inputLabel}>Đầu ra</span>
-                      <select className={styles.langSelect} style={{ width: "100%" }} data-output-mode>
+                      <select
+                        className={styles.langSelect}
+                        style={{ width: "100%" }}
+                        value={outputModeVideo}
+                        onChange={(e) => setOutputModeVideo(e.target.value)}
+                      >
                         <option value="burn">Chèn sub vào Video</option>
                         <option value="srt">Chỉ xuất file .SRT</option>
+                        <option value="dub">Lồng tiếng AI (TTS)</option>
+                        <option value="burn+dub">Chèn sub + Lồng tiếng AI</option>
                       </select>
                     </div>
                   </div>
+
+                  {(outputModeVideo === "dub" || outputModeVideo === "burn+dub") && (
+                    <div className={styles.inputGroup}>
+                      <span className={styles.inputLabel}>Giọng lồng tiếng</span>
+                      <VoiceSelector
+                        voices={voices}
+                        selectedVoiceId={dubVoiceIdVideo}
+                        onChange={setDubVoiceIdVideo}
+                        onPreview={handlePreviewVoice}
+                        previewingVoiceId={previewingVoiceId}
+                      />
+                    </div>
+                  )}
 
                   <button
                     type="submit"
@@ -1244,32 +1270,44 @@ export default function Home() {
                         <div className={styles.jobDetails}>
                           <span>Mục tiêu: {job.targetLang.toUpperCase()}</span>
                           {job.status === "COMPLETED" ? (
-                            <a
-                              href={`http://localhost:3001/translation/output/${job.id}/srt`}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                if (!token) return;
-                                fetch(`http://localhost:3001/translation/output/${job.id}/srt`, {
-                                  headers: { Authorization: `Bearer ${token}` },
-                                })
-                                  .then((res) => {
-                                    if (!res.ok) throw new Error("Download failed");
-                                    return res.blob();
-                                  })
-                                  .then((blob) => {
-                                    const url = URL.createObjectURL(blob);
-                                    const a = document.createElement("a");
-                                    a.href = url;
-                                    a.download = `${job.fileName}.srt`;
-                                    a.click();
-                                    URL.revokeObjectURL(url);
-                                  })
-                                  .catch(() => showToast("error", "Chưa có file SRT để tải"));
-                              }}
-                              style={{ color: "var(--success)", fontWeight: 600 }}
-                            >
-                              📥 Tải file SRT
-                            </a>
+                            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                              {job.subtitlesUrl && (
+                                <a
+                                  href="#"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    handleDownloadOutput(job.id, "srt", `${job.fileName}.srt`);
+                                  }}
+                                  style={{ color: "var(--success)", fontWeight: 600 }}
+                                >
+                                  📥 Tải file SRT
+                                </a>
+                              )}
+                              {job.outputVideoUrl && (
+                                <a
+                                  href="#"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    handleDownloadOutput(job.id, "video", `translated_${job.fileName}`);
+                                  }}
+                                  style={{ color: "var(--success)", fontWeight: 600 }}
+                                >
+                                  🎬 Tải Video
+                                </a>
+                              )}
+                              {job.outputAudioUrl && (
+                                <a
+                                  href="#"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    handleDownloadOutput(job.id, "audio", `audio_${job.fileName}.mp3`);
+                                  }}
+                                  style={{ color: "var(--success)", fontWeight: 600 }}
+                                >
+                                  🔊 Tải Audio lồng tiếng
+                                </a>
+                              )}
+                            </div>
                           ) : (
                             <span>Tiến trình: {job.progress}%</span>
                           )}

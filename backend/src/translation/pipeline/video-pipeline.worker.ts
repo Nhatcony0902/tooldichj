@@ -12,10 +12,20 @@ import {
   type IStorageProvider,
 } from '../../storage/storage.interface';
 import { VIDEO_PIPELINE_QUEUE } from '../../queue/queue.module';
+import { TtsService } from '../../tts/tts.service';
+import { DEFAULT_VOICE_ID } from '../../tts/voices.config';
 import { extractAudio } from './audio-extractor';
 import { transcribeAudio } from './stt.service';
 import { translateSegments, buildSrt } from './subtitle.service';
 import { burnInSubtitles } from './burn-in.service';
+import { buildDubbingTrack } from './dubbing.service';
+import { muxVideoWithAudio } from './mux.service';
+import {
+  isValidOutputMode,
+  outputModeIncludesBurn,
+  outputModeIncludesDub,
+  outputModeProducesVideo,
+} from './output-mode';
 
 interface VideoPipelineJobData {
   jobId: string;
@@ -29,6 +39,7 @@ export class VideoPipelineWorker extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly translationService: TranslationService,
+    private readonly ttsService: TtsService,
     @Inject(STORAGE_PROVIDER) private readonly storage: IStorageProvider,
   ) {
     super();
@@ -113,20 +124,70 @@ export class VideoPipelineWorker extends WorkerHost {
       const srtKey = `outputs/${jobId}/subtitles.srt`;
       await this.storage.save(Buffer.from(srtContent, 'utf-8'), srtKey);
 
+      // outputMode is a plain String column (no DB-level enum), so a
+      // manually-edited row or pre-validation legacy row could in theory
+      // hold a value outside OUTPUT_MODES — fail the job explicitly rather
+      // than let an invalid mode silently fall through every includes-check.
+      if (!isValidOutputMode(videoJob.outputMode)) {
+        throw new Error(
+          `Invalid outputMode in VideoJob: "${videoJob.outputMode}"`,
+        );
+      }
+      const outputMode = videoJob.outputMode;
       let outputVideoKey: string | null = null;
-      if (videoJob.outputMode !== 'srt') {
+      let outputAudioKey: string | null = null;
+      let driftWarning = false;
+
+      let videoStreamSourcePath = inputPath;
+      if (outputModeIncludesBurn(outputMode)) {
         await this.updateJob(jobId, {
-          progress: 90,
+          progress: 80,
           stepDescription: 'Đang chèn cứng phụ đề vào video...',
         });
         const srtPath = path.join(tmpDir, 'subtitles.srt');
         await fs.writeFile(srtPath, srtContent, 'utf-8');
-        const outputVideoPath = path.join(tmpDir, 'output.mp4');
-        await burnInSubtitles(inputPath, srtPath, outputVideoPath);
-        const outputVideoBuffer = await fs.readFile(outputVideoPath);
+        const burnedVideoPath = path.join(tmpDir, 'burned.mp4');
+        await burnInSubtitles(inputPath, srtPath, burnedVideoPath);
+        videoStreamSourcePath = burnedVideoPath;
+      }
+
+      if (outputModeIncludesDub(outputMode)) {
+        await this.updateJob(jobId, {
+          progress: 90,
+          stepDescription: 'Đang tạo lồng tiếng AI (TTS)...',
+        });
+        const voiceId = videoJob.dubVoiceId || DEFAULT_VOICE_ID;
+        const { audioPath: dubAudioPath, driftSeconds } =
+          await buildDubbingTrack(
+            this.ttsService,
+            videoJob.userId,
+            translatedSegments,
+            voiceId,
+            tmpDir,
+          );
+        driftWarning = driftSeconds > 1;
+        const dubAudioBuffer = await fs.readFile(dubAudioPath);
+        outputAudioKey = `outputs/${jobId}/dub-audio.mp3`;
+        await this.storage.save(dubAudioBuffer, outputAudioKey);
+
+        const dubbedVideoPath = path.join(tmpDir, 'dubbed.mp4');
+        await muxVideoWithAudio(
+          videoStreamSourcePath,
+          dubAudioPath,
+          dubbedVideoPath,
+        );
+        videoStreamSourcePath = dubbedVideoPath;
+      }
+
+      if (outputModeProducesVideo(outputMode)) {
+        const outputVideoBuffer = await fs.readFile(videoStreamSourcePath);
         outputVideoKey = `outputs/${jobId}/video.mp4`;
         await this.storage.save(outputVideoBuffer, outputVideoKey);
       }
+
+      const completionMessage = driftWarning
+        ? 'Hoàn tất! Lưu ý: lồng tiếng có thể trôi nhịp nhẹ ở một số đoạn nói quá dài.'
+        : 'Hoàn tất! Phụ đề đã sẵn sàng tải xuống.';
 
       await this.prisma.$transaction(async (tx) => {
         // Atomic guard against double-processing (concurrent worker retry,
@@ -138,9 +199,10 @@ export class VideoPipelineWorker extends WorkerHost {
           data: {
             status: 'COMPLETED',
             progress: 100,
-            stepDescription: 'Hoàn tất! Phụ đề đã sẵn sàng tải xuống.',
+            stepDescription: completionMessage,
             subtitlesUrl: srtKey,
             outputVideoUrl: outputVideoKey,
+            outputAudioUrl: outputAudioKey,
             errorMessage: null,
           },
         });

@@ -1,42 +1,33 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { CreditService } from '../credit/credit.service';
+import { GeminiClientService } from '../gemini/gemini-client.service';
 import { GoogleGenAI } from '@google/genai';
-import * as crypto from 'crypto';
 
 interface CreateVideoJobParams {
   fileName: string;
   inputStorageKey: string;
   targetLang: string;
   outputMode: string;
+  dubVoiceId?: string | null;
 }
 
 @Injectable()
 export class TranslationService {
   private readonly logger = new Logger(TranslationService.name);
-  private ai: GoogleGenAI | null = null;
 
   constructor(
     private prisma: PrismaService,
     private readonly creditService: CreditService,
-  ) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (apiKey) {
-      this.ai = new GoogleGenAI({ apiKey });
-      this.logger.log('Gemini API initialized successfully.');
-    } else {
-      this.logger.warn(
-        'GEMINI_API_KEY is not defined. Using Mock Translator fallback.',
-      );
-    }
-  }
+    private readonly geminiClient: GeminiClientService,
+  ) {}
 
   getHash(text: string): string {
-    return crypto.createHash('sha256').update(text).digest('hex');
+    return this.geminiClient.getHash(text);
   }
 
   getAi(): GoogleGenAI | null {
-    return this.ai;
+    return this.geminiClient.getAi();
   }
 
   async translate(
@@ -96,7 +87,8 @@ export class TranslationService {
 
     let translatedText = '';
 
-    if (this.ai) {
+    const ai = this.geminiClient.getAi();
+    if (ai) {
       try {
         const prompt = `Translate the following text from "${sourceLang}" to "${targetLang}".
 Return ONLY the exact translated text. Do not add any introductory phrases, explanations, notes, or extra markdown formatting.
@@ -105,7 +97,7 @@ Maintain the original format and line breaks.
 Text to translate:
 ${text}`;
 
-        const response = await this.ai.models.generateContent({
+        const response = await ai.models.generateContent({
           model: 'gemini-2.5-flash',
           contents: prompt,
         });
@@ -149,7 +141,8 @@ ${text}`;
   }
 
   async createVideoJob(userId: string, params: CreateVideoJobParams) {
-    const { fileName, inputStorageKey, targetLang, outputMode } = params;
+    const { fileName, inputStorageKey, targetLang, outputMode, dubVoiceId } =
+      params;
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -170,6 +163,7 @@ ${text}`;
         inputStorageKey,
         targetLang,
         outputMode,
+        dubVoiceId: dubVoiceId || null,
         status: 'PENDING',
         progress: 0,
         stepDescription: 'Đang xếp hàng chờ xử lý...',

@@ -9,6 +9,7 @@ import TextTranslationSection from "./components/TextTranslationSection";
 import VideoTranslationSection from "./components/VideoTranslationSection";
 import MfaSettingsSection from "./components/MfaSettingsSection";
 import BillingSection from "./components/BillingSection";
+import ProfileSection from "./components/ProfileSection";
 import { useAuth } from "./hooks/useAuth";
 import { Voice } from "./types";
 
@@ -74,7 +75,7 @@ export default function Home() {
   } = useAuth();
 
   // Tab State
-  const [activeTab, setActiveTab] = useState<"text" | "video">("text");
+  const [activeTab, setActiveTab] = useState<"text" | "video" | "profile">("text");
 
   // TTS Voice States
   const [voices, setVoices] = useState<Voice[]>([]);
@@ -208,6 +209,12 @@ export default function Home() {
             >
               🎥 Dịch video & Chèn Sub (10 Credits)
             </button>
+            <button
+              className={`${styles.tabButton} ${activeTab === "profile" ? styles.activeTab : ""}`}
+              onClick={() => setActiveTab("profile")}
+            >
+              👤 Hồ sơ cá nhân
+            </button>
           </div>
 
           {/* Main Board */}
@@ -221,7 +228,7 @@ export default function Home() {
               onPreviewVoice={handlePreviewVoice}
               previewingVoiceId={previewingVoiceId}
             />
-          ) : (
+          ) : activeTab === "video" ? (
             <VideoTranslationSection
               token={token!}
               user={user}
@@ -230,6 +237,13 @@ export default function Home() {
               voices={voices}
               onPreviewVoice={handlePreviewVoice}
               previewingVoiceId={previewingVoiceId}
+            />
+          ) : (
+            <ProfileSection
+              token={token!}
+              user={user}
+              refreshUser={fetchUserMe}
+              showToast={showToast}
             />
           )}
 

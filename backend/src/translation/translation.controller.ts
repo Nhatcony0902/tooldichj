@@ -3,14 +3,36 @@ import {
   Post,
   Get,
   Body,
+  Param,
   BadRequestException,
+  ForbiddenException,
+  NotFoundException,
   UseGuards,
+  UseInterceptors,
+  UploadedFile,
   Request,
+  Res,
+  Inject,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
+import type { Response } from 'express';
+import * as path from 'path';
 import { TranslationService } from './translation.service';
+import { QueueService } from './queue.service';
 import { TranslateDto } from './dto/translate.dto';
 import { CreateVideoJobDto } from './dto/create-video-job.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import {
+  STORAGE_PROVIDER,
+  type IStorageProvider,
+} from '../storage/storage.interface';
+import {
+  OUTPUT_MODES,
+  isValidOutputMode,
+  outputModeIncludesDub,
+} from './pipeline/output-mode';
+import { isValidVoiceId } from '../tts/voices.config';
 
 interface RequestWithUser {
   user: {
@@ -20,11 +42,23 @@ interface RequestWithUser {
   };
 }
 
+const MAX_FILE_SIZE =
+  parseInt(process.env.MAX_UPLOAD_MB || '100', 10) * 1024 * 1024;
+
+const OUTPUT_KINDS = ['srt', 'video', 'audio'] as const;
+type OutputKind = (typeof OUTPUT_KINDS)[number];
+
 @Controller('translation')
 export class TranslationController {
-  constructor(private readonly translationService: TranslationService) {}
+  constructor(
+    private readonly translationService: TranslationService,
+    private readonly queueService: QueueService,
+    @Inject(STORAGE_PROVIDER)
+    private readonly storage: IStorageProvider,
+  ) {}
 
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
   @Post('translate')
   async translate(
     @Body() translateDto: TranslateDto,
@@ -69,53 +103,143 @@ export class TranslationController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post('video-job')
+  @UseInterceptors(
+    FileInterceptor('video', {
+      limits: { fileSize: MAX_FILE_SIZE },
+      fileFilter: (_req, file, cb) => {
+        if (!file.mimetype.startsWith('video/')) {
+          cb(new BadRequestException('Only video files are accepted'), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
   async createVideoJob(
-    @Body() createVideoJobDto: CreateVideoJobDto,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body() dto: CreateVideoJobDto,
     @Request() req: RequestWithUser,
   ) {
     const userId = req.user.id;
-    if (!createVideoJobDto.fileName) {
-      throw new BadRequestException('fileName is required');
+
+    if (!file) {
+      throw new BadRequestException('A video file is required');
     }
-    try {
-      const job = await this.translationService.createVideoJob(
-        userId,
-        createVideoJobDto,
+    if (!dto.targetLang) {
+      throw new BadRequestException('targetLang is required');
+    }
+    const outputMode = dto.outputMode || 'burn';
+    if (!isValidOutputMode(outputMode)) {
+      throw new BadRequestException(
+        `Invalid outputMode "${outputMode}". Must be one of: ${OUTPUT_MODES.join(', ')}`,
       );
-      return {
-        success: true,
-        job,
-      };
+    }
+    if (outputModeIncludesDub(outputMode)) {
+      if (!dto.dubVoiceId || !isValidVoiceId(dto.dubVoiceId)) {
+        throw new BadRequestException(
+          'A valid dubVoiceId is required when outputMode includes dubbing',
+        );
+      }
+    }
+
+    try {
+      // basename() strips any directory components a crafted originalname
+      // could carry (e.g. "../../etc/passwd"), so the storage key can never
+      // resolve outside the upload directory.
+      const safeName = path.basename(file.originalname);
+      const storageKey = `uploads/${Date.now()}-${safeName}`;
+      await this.storage.save(file.buffer, storageKey);
+
+      const job = await this.translationService.createVideoJob(userId, {
+        fileName: file.originalname,
+        inputStorageKey: storageKey,
+        targetLang: dto.targetLang,
+        outputMode,
+        dubVoiceId: outputModeIncludesDub(outputMode) ? dto.dubVoiceId : null,
+      });
+      await this.queueService.enqueueVideoJob(job.id);
+      return { success: true, job };
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : 'Failed to create video job';
-      return {
-        success: false,
-        error: errorMessage,
-      };
+      return { success: false, error: errorMessage };
     }
   }
 
+  // Frontend polls this every 3s while a job is active — never throttle it.
+  @SkipThrottle()
   @UseGuards(JwtAuthGuard)
   @Get('video-jobs')
   async getVideoJobs(@Request() req: RequestWithUser) {
     const userId = req.user.id;
     try {
       const jobs = await this.translationService.getVideoJobs(userId);
-      return {
-        success: true,
-        jobs,
-      };
+      return { success: true, jobs };
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error
           ? error.message
           : 'Failed to retrieve video jobs';
-      return {
-        success: false,
-        error: errorMessage,
-      };
+      return { success: false, error: errorMessage };
     }
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('output/:jobId/:kind')
+  async getOutput(
+    @Param('jobId') jobId: string,
+    @Param('kind') kind: string,
+    @Request() req: RequestWithUser,
+    @Res() res: Response,
+  ) {
+    if (!OUTPUT_KINDS.includes(kind as OutputKind)) {
+      throw new BadRequestException(
+        `Invalid kind "${kind}". Must be one of: ${OUTPUT_KINDS.join(', ')}`,
+      );
+    }
+
+    const job = await this.translationService.getVideoJobById(jobId);
+    if (!job) {
+      throw new NotFoundException('Job not found');
+    }
+    if (job.userId !== req.user.id) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    let storageKey: string | null = null;
+    let contentType: string;
+    let fileName: string;
+
+    switch (kind as OutputKind) {
+      case 'srt':
+        storageKey = job.subtitlesUrl;
+        contentType = 'application/x-subrip';
+        fileName = `${job.fileName}.srt`;
+        break;
+      case 'video':
+        storageKey = job.outputVideoUrl;
+        contentType = 'video/mp4';
+        fileName = `translated_${job.fileName}`;
+        break;
+      case 'audio':
+        storageKey = job.outputAudioUrl;
+        contentType = 'audio/mpeg';
+        fileName = `audio_${job.fileName}.mp3`;
+        break;
+    }
+
+    if (!storageKey || !(await this.storage.exists(storageKey))) {
+      throw new NotFoundException('Output not yet available');
+    }
+
+    const stream = await this.storage.stream(storageKey);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(fileName)}"`,
+    );
+    stream.pipe(res);
   }
 }

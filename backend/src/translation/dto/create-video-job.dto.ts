@@ -1,4 +1,5 @@
 export class CreateVideoJobDto {
-  fileName: string;
   targetLang: string;
+  outputMode?: string;
+  dubVoiceId?: string;
 }

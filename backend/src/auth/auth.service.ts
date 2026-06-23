@@ -14,6 +14,8 @@ import {
   LoginDto,
   VerifyEmailDto,
   ResendOtpDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
 } from './dto/auth.dto';
 import { MailService } from '../mail/mail.service';
 import { randomInt } from 'crypto';
@@ -240,6 +242,7 @@ export class AuthService {
         name: user.name,
         role: user.role,
         credits: user.credits,
+        preferredVoiceId: user.preferredVoiceId,
       },
     };
   }
@@ -292,6 +295,7 @@ export class AuthService {
           name: user.name,
           role: user.role,
           credits: user.credits,
+          preferredVoiceId: user.preferredVoiceId,
         },
       };
     } catch (err: any) {
@@ -409,6 +413,107 @@ export class AuthService {
     };
   }
 
+  async requestPasswordReset(dto: ForgotPasswordDto) {
+    const { email } = dto;
+    if (!email) {
+      throw new BadRequestException('Email is required');
+    }
+
+    const genericResponse = {
+      success: true,
+      message:
+        'If this email is registered, a password reset code has been sent.',
+    };
+
+    // Anti-enumeration: same response whether or not the email exists.
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      return genericResponse;
+    }
+
+    // Same cooldown guard as resendOtp — without it this endpoint can spam a
+    // victim's inbox and continuously rotate their reset OTP out from under them.
+    if (
+      user.passwordResetLastSentAt &&
+      Date.now() - user.passwordResetLastSentAt.getTime() <
+        OTP_RESEND_COOLDOWN_MS
+    ) {
+      throw new BadRequestException(
+        'Please wait before requesting another password reset code',
+      );
+    }
+
+    const otp = generateOtp();
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordResetOtp: otp,
+        passwordResetOtpExpiresAt: new Date(Date.now() + OTP_TTL_MS),
+        passwordResetLastSentAt: new Date(),
+        passwordResetAttempts: 0,
+      },
+    });
+
+    try {
+      await this.mailService.sendPasswordResetEmail(email, otp);
+    } catch (err) {
+      console.error('Failed to send password reset email:', err);
+    }
+
+    return genericResponse;
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    const { email, otp, newPassword } = dto;
+    if (!email || !otp || !newPassword) {
+      throw new BadRequestException(
+        'Email, verification code, and new password are required',
+      );
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user || !user.passwordResetOtp || !user.passwordResetOtpExpiresAt) {
+      throw new BadRequestException(INVALID_OTP_MESSAGE);
+    }
+
+    // Same max-attempts guard as verifyEmail — without it a known email's
+    // 6-digit OTP is brute-forceable (per-IP throttling alone doesn't cap it).
+    if (user.passwordResetAttempts >= OTP_MAX_ATTEMPTS) {
+      throw new BadRequestException(
+        'Too many failed attempts. Please request a new password reset code.',
+      );
+    }
+
+    if (
+      user.passwordResetOtpExpiresAt < new Date() ||
+      user.passwordResetOtp !== otp
+    ) {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { passwordResetAttempts: { increment: 1 } },
+      });
+      throw new BadRequestException(INVALID_OTP_MESSAGE);
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        passwordResetOtp: null,
+        passwordResetOtpExpiresAt: null,
+        passwordResetLastSentAt: null,
+        passwordResetAttempts: 0,
+      },
+    });
+
+    return {
+      success: true,
+      message:
+        'Password reset successfully. Please log in with your new password.',
+    };
+  }
+
   async getMe(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -420,6 +525,7 @@ export class AuthService {
         role: true,
         credits: true,
         mfaEnabled: true,
+        preferredVoiceId: true,
       },
     });
     if (!user) {

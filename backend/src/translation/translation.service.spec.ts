@@ -129,6 +129,89 @@ describe('TranslationService', () => {
     });
   });
 
+  describe('translate — chunking', () => {
+    it('short text (<= 6000 chars) still does exactly 1 chunk, 1 Gemini call, 1 credit', async () => {
+      const ai = {
+        models: {
+          generateContent: jest
+            .fn()
+            .mockResolvedValue({ text: 'xin chào' }),
+        },
+      };
+      const { service, prisma, creditService } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+      prisma.translationCache.create.mockResolvedValue({});
+
+      const shortText = 'Hello world. '.repeat(50); // well under 6000 chars
+      const result = await service.translate('u1', shortText, 'en', 'vi');
+
+      expect(result).toBe('xin chào');
+      expect(ai.models.generateContent).toHaveBeenCalledTimes(1);
+      expect(creditService.deductCredit).toHaveBeenCalledWith('u1', 1);
+    });
+
+    it('multi-paragraph text > 6000 chars splits into multiple chunks and deducts chunks.length credits', async () => {
+      const ai = {
+        models: {
+          generateContent: jest
+            .fn()
+            .mockImplementation(({ contents }: { contents: string }) =>
+              Promise.resolve({ text: `translated:${contents.length}` }),
+            ),
+        },
+      };
+      const { service, prisma, creditService } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 100 });
+      // Whole-text cache lookup misses; every per-chunk lookup also misses.
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+      prisma.translationCache.create.mockResolvedValue({});
+
+      // Build several paragraphs (separated by blank lines) that together
+      // exceed the 6000-char chunk size, forcing a multi-chunk split.
+      const paragraph = 'Lorem ipsum dolor sit amet. '.repeat(150); // ~4350 chars
+      const longText = [paragraph, paragraph, paragraph].join('\n\n'); // > 6000 chars total
+
+      const result = await service.translate('u1', longText, 'en', 'vi');
+
+      expect(ai.models.generateContent.mock.calls.length).toBeGreaterThan(1);
+      const callCount = ai.models.generateContent.mock.calls.length;
+      expect(creditService.deductCredit).toHaveBeenCalledWith(
+        'u1',
+        callCount,
+      );
+      expect(result).toContain('translated:');
+    });
+
+    it('a single very long paragraph (no blank-line breaks) falls back to sentence-splitting', async () => {
+      const ai = {
+        models: {
+          generateContent: jest
+            .fn()
+            .mockImplementation(({ contents }: { contents: string }) =>
+              Promise.resolve({ text: `translated:${contents.length}` }),
+            ),
+        },
+      };
+      const { service, prisma, creditService } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 100 });
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+      prisma.translationCache.create.mockResolvedValue({});
+
+      // One giant paragraph (no "\n\n") made of many sentences, > 6000 chars.
+      const singleParagraph = 'This is one sentence. '.repeat(400); // ~9200 chars, no blank lines
+
+      await service.translate('u1', singleParagraph, 'en', 'vi');
+
+      const callCount = ai.models.generateContent.mock.calls.length;
+      expect(callCount).toBeGreaterThan(1);
+      expect(creditService.deductCredit).toHaveBeenCalledWith(
+        'u1',
+        callCount,
+      );
+    });
+  });
+
   describe('createVideoJob', () => {
     it('rejects when the user has fewer than 10 credits', async () => {
       const { service, prisma } = buildService();

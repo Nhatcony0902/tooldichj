@@ -15,6 +15,11 @@ interface TextTranslationSectionProps {
   previewingVoiceId: string | null;
 }
 
+// Mirrors backend translation.service.ts's CHUNK_SIZE / MAX_TEXT_LENGTH —
+// kept as duplicated literals (no shared-constants file for two numbers).
+const CHUNK_SIZE = 6000;
+const MAX_TEXT_LENGTH = 20000;
+
 export default function TextTranslationSection({
   token,
   user,
@@ -109,6 +114,7 @@ export default function TextTranslationSection({
   // Gọi dịch văn bản
   const handleTranslate = async () => {
     if (!inputText.trim() || !token) return;
+    if (inputText.length > MAX_TEXT_LENGTH) return;
     setIsTranslating(true);
     try {
       const response = await fetch("http://localhost:3001/translation/translate", {
@@ -152,6 +158,9 @@ export default function TextTranslationSection({
     }
   };
 
+  const isTextTooLong = inputText.length > MAX_TEXT_LENGTH;
+  const estimatedChunks = Math.max(1, Math.ceil(inputText.length / CHUNK_SIZE));
+
   const handleSwapLanguages = () => {
     setSourceLang(targetLang);
     setTargetLang(sourceLang);
@@ -187,6 +196,15 @@ export default function TextTranslationSection({
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
         />
+        {isTextTooLong ? (
+          <div style={{ fontSize: "0.8rem", color: "var(--error)", marginBottom: "0.5rem" }}>
+            Văn bản vượt quá giới hạn {MAX_TEXT_LENGTH} ký tự (hiện tại: {inputText.length})
+          </div>
+        ) : (
+          <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "0.5rem" }}>
+            {inputText.length} / {MAX_TEXT_LENGTH} ký tự
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <button className={styles.tabButton} onClick={handleSwapLanguages} title="Đổi chiều ngôn ngữ">
             🔄 Đổi chiều
@@ -194,9 +212,11 @@ export default function TextTranslationSection({
           <button
             className={styles.translateButton}
             onClick={handleTranslate}
-            disabled={isTranslating}
+            disabled={isTranslating || isTextTooLong}
           >
-            {isTranslating ? "Đang dịch..." : "Dịch thuật (1 Credit)"}
+            {isTranslating
+              ? "Đang dịch..."
+              : `Dịch thuật (${estimatedChunks} Credit${estimatedChunks > 1 ? "s" : ""})`}
           </button>
         </div>
       </div>

@@ -12,6 +12,8 @@ interface CreateVideoJobParams {
   dubVoiceId?: string | null;
 }
 
+const CHUNK_SIZE = 6000;
+
 @Injectable()
 export class TranslationService {
   private readonly logger = new Logger(TranslationService.name);
@@ -85,6 +87,56 @@ export class TranslationService {
       return cachedTranslation;
     }
 
+    // Cache miss on the whole text: split into paragraph/sentence-aware
+    // chunks (a "chunk" of 1 is the common case for short text) and
+    // translate each sequentially, reusing the exact single-chunk
+    // cache-lookup -> Gemini-call -> cache-write path per chunk.
+    const chunks = this.splitIntoChunks(text);
+    const translatedChunks: string[] = [];
+
+    for (const chunk of chunks) {
+      translatedChunks.push(
+        await this.translateChunk(chunk, sourceLang, targetLang, sLang, tLang),
+      );
+    }
+
+    const translatedText = translatedChunks.join('\n\n');
+
+    if (translatedText && chargeCredit) {
+      await this.creditService.deductCredit(userId, chunks.length);
+    }
+
+    return translatedText;
+  }
+
+  private async translateChunk(
+    text: string,
+    sourceLang: string,
+    targetLang: string,
+    sLang: string,
+    tLang: string,
+  ): Promise<string> {
+    const textHash = this.getHash(text);
+
+    try {
+      const cached = await this.prisma.translationCache.findUnique({
+        where: {
+          textHash_sourceLang_targetLang: {
+            textHash,
+            sourceLang: sLang,
+            targetLang: tLang,
+          },
+        },
+      });
+
+      if (cached) {
+        this.logger.log(`Cache hit for hash: ${textHash}`);
+        return cached.translatedText;
+      }
+    } catch (err) {
+      this.logger.error('Failed to query database cache:', err);
+    }
+
     let translatedText = '';
 
     const ai = this.geminiClient.getAi();
@@ -127,10 +179,6 @@ ${text}`;
         const message = err instanceof Error ? err.message : 'Unknown error';
         this.logger.warn(`Failed to write to cache: ${message}`);
       }
-
-      if (chargeCredit) {
-        await this.creditService.deductCredit(userId, 1);
-      }
     }
 
     return translatedText;
@@ -138,6 +186,50 @@ ${text}`;
 
   private mockTranslate(text: string, targetLang: string): string {
     return `[Mock Dịch sang ${targetLang}]: ${text}`;
+  }
+
+  private splitIntoChunks(text: string): string[] {
+    if (text.length <= CHUNK_SIZE) return [text];
+
+    // 1. Split on paragraph boundaries first (never break mid-sentence as a first resort).
+    const paragraphs = text.split(/\n{2,}/);
+    const chunks: string[] = [];
+    let current = '';
+
+    for (const para of paragraphs) {
+      const candidate = current ? `${current}\n\n${para}` : para;
+      if (candidate.length <= CHUNK_SIZE) {
+        current = candidate;
+        continue;
+      }
+      if (current) chunks.push(current);
+      // 2. A single paragraph longer than CHUNK_SIZE: fall back to sentence-boundary splitting.
+      if (para.length > CHUNK_SIZE) {
+        chunks.push(...this.splitParagraphBySentence(para));
+        current = '';
+      } else {
+        current = para;
+      }
+    }
+    if (current) chunks.push(current);
+    return chunks;
+  }
+
+  private splitParagraphBySentence(paragraph: string): string[] {
+    const sentences = paragraph.split(/(?<=[.!?])\s+/);
+    const chunks: string[] = [];
+    let current = '';
+    for (const sentence of sentences) {
+      const candidate = current ? `${current} ${sentence}` : sentence;
+      if (candidate.length <= CHUNK_SIZE) {
+        current = candidate;
+      } else {
+        if (current) chunks.push(current);
+        current = sentence; // a single sentence longer than CHUNK_SIZE is sent as-is (rare edge case)
+      }
+    }
+    if (current) chunks.push(current);
+    return chunks;
   }
 
   async createVideoJob(userId: string, params: CreateVideoJobParams) {

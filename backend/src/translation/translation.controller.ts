@@ -48,6 +48,8 @@ const MAX_FILE_SIZE =
 const OUTPUT_KINDS = ['srt', 'video', 'audio'] as const;
 type OutputKind = (typeof OUTPUT_KINDS)[number];
 
+const MAX_TEXT_LENGTH = 20000;
+
 @Controller('translation')
 export class TranslationController {
   constructor(
@@ -69,6 +71,11 @@ export class TranslationController {
 
     if (!text) {
       throw new BadRequestException('Text is required');
+    }
+    if (text.length > MAX_TEXT_LENGTH) {
+      throw new BadRequestException(
+        `Text exceeds the maximum length of ${MAX_TEXT_LENGTH.toLocaleString()} characters (got ${text.length})`,
+      );
     }
     if (!sourceLang || !targetLang) {
       throw new BadRequestException(

@@ -142,7 +142,7 @@ export default function Home() {
   return (
     <div className={styles.container}>
       {/* Toast Notification */}
-      <Toast type={toast.type} message={toast.message} />
+      <Toast type={toast.type} message={toast.message} actionLabel={toast.actionLabel} onAction={toast.onAction} />
 
       {/* Header */}
       <Header isLoggedIn={isLoggedIn} user={user} onLogout={handleLogout} />

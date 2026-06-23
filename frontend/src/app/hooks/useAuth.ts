@@ -6,6 +6,8 @@ import { User } from "../types";
 export interface ToastState {
   type: "success" | "error" | null;
   message: string;
+  actionLabel?: string;
+  onAction?: () => void;
 }
 
 export function useAuth() {
@@ -49,12 +51,19 @@ export function useAuth() {
     message: "",
   });
 
-  const showToast = useCallback((type: "success" | "error", message: string) => {
-    setToast({ type, message });
-    setTimeout(() => {
-      setToast({ type: null, message: "" });
-    }, 4000);
-  }, []);
+  const showToast = useCallback(
+    (
+      type: "success" | "error",
+      message: string,
+      action?: { label: string; onClick: () => void },
+    ) => {
+      setToast({ type, message, actionLabel: action?.label, onAction: action?.onClick });
+      setTimeout(() => {
+        setToast({ type: null, message: "" });
+      }, 4000);
+    },
+    [],
+  );
 
   // Đăng xuất
   const handleLogout = useCallback((onLogoutCb?: () => void) => {

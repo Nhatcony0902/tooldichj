@@ -9,7 +9,11 @@ interface VideoTranslationSectionProps {
   token: string;
   user: User | null;
   refreshUser: (token: string) => Promise<void>;
-  showToast: (type: "success" | "error", message: string) => void;
+  showToast: (
+    type: "success" | "error",
+    message: string,
+    action?: { label: string; onClick: () => void },
+  ) => void;
   voices: Voice[];
   onPreviewVoice: (voiceId: string) => Promise<void>;
   previewingVoiceId: string | null;
@@ -121,6 +125,12 @@ export default function VideoTranslationSection({
         fetchJobs(token);
         refreshUser(token);
         showToast("success", "Đã thêm video vào hàng đợi dịch thuật!");
+      } else if (data.code === "INSUFFICIENT_CREDITS") {
+        showToast("error", data.error || "Lỗi tạo video job", {
+          label: "Nạp thêm →",
+          onClick: () =>
+            document.getElementById("billing-section")?.scrollIntoView({ behavior: "smooth" }),
+        });
       } else {
         showToast("error", data.error || "Lỗi tạo video job");
       }

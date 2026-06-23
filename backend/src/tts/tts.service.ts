@@ -6,6 +6,7 @@ import * as path from 'path';
 import { PrismaService } from '../prisma.service';
 import { GeminiClientService } from '../gemini/gemini-client.service';
 import { CreditService } from '../credit/credit.service';
+import { InsufficientCreditsError } from '../credit/insufficient-credits.error';
 import {
   STORAGE_PROVIDER,
   type IStorageProvider,
@@ -56,7 +57,7 @@ export class TtsService {
       throw new Error('User not found');
     }
     if (chargeCredit && user.credits <= 0) {
-      throw new Error(
+      throw new InsufficientCreditsError(
         'Tài khoản đã hết Credits. Vui lòng nạp thêm để tiếp tục!',
       );
     }

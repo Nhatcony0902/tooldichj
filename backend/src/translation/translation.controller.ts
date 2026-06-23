@@ -34,6 +34,7 @@ import {
   outputModeIncludesDub,
 } from './pipeline/output-mode';
 import { isValidVoiceId } from '../tts/voices.config';
+import { InsufficientCreditsError } from '../credit/insufficient-credits.error';
 
 interface RequestWithUser {
   user: {
@@ -108,6 +109,7 @@ export class TranslationController {
       return {
         success: false,
         error: errorMessage,
+        code: error instanceof InsufficientCreditsError ? 'INSUFFICIENT_CREDITS' : undefined,
       };
     }
   }
@@ -174,7 +176,11 @@ export class TranslationController {
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : 'Failed to create video job';
-      return { success: false, error: errorMessage };
+      return {
+        success: false,
+        error: errorMessage,
+        code: error instanceof InsufficientCreditsError ? 'INSUFFICIENT_CREDITS' : undefined,
+      };
     }
   }
 

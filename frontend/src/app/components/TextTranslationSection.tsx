@@ -9,7 +9,11 @@ interface TextTranslationSectionProps {
   token: string;
   user: User | null;
   refreshUser: (token: string) => Promise<void>;
-  showToast: (type: "success" | "error", message: string) => void;
+  showToast: (
+    type: "success" | "error",
+    message: string,
+    action?: { label: string; onClick: () => void },
+  ) => void;
   voices: Voice[];
   onPreviewVoice: (voiceId: string) => Promise<void>;
   previewingVoiceId: string | null;
@@ -114,7 +118,14 @@ export default function TextTranslationSection({
       });
       if (!response.ok) {
         const data = await response.json();
-        showToast("error", data.error || "Không thể tạo giọng đọc");
+        if (data.code === "INSUFFICIENT_CREDITS") {
+          showToast("error", data.error || "Không thể tạo giọng đọc", {
+            label: "Nạp thêm →",
+            onClick: () => document.getElementById("billing-section")?.scrollIntoView({ behavior: "smooth" }),
+          });
+        } else {
+          showToast("error", data.error || "Không thể tạo giọng đọc");
+        }
         return;
       }
       await playAudioBlob(await response.blob());
@@ -176,6 +187,13 @@ export default function TextTranslationSection({
       } else {
         setOutputText(`[Lỗi]: ${data.error || "Không thể dịch thuật"}`);
         setDetectedLang(null);
+        if (data.code === "INSUFFICIENT_CREDITS") {
+          showToast("error", data.error, {
+            label: "Nạp thêm →",
+            onClick: () =>
+              document.getElementById("billing-section")?.scrollIntoView({ behavior: "smooth" }),
+          });
+        }
       }
     } catch {
       setOutputText("[Lỗi kết nối]: Vui lòng kiểm tra lại Server Backend!");

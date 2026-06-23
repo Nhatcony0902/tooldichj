@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma.service';
 import { CreditService } from '../credit/credit.service';
 import { GeminiClientService } from '../gemini/gemini-client.service';
 import { GoogleGenAI } from '@google/genai';
+import { InsufficientCreditsError } from '../credit/insufficient-credits.error';
 
 interface CreateVideoJobParams {
   fileName: string;
@@ -66,7 +67,7 @@ export class TranslationService {
       throw new Error('User not found');
     }
     if (user.credits <= 0) {
-      throw new Error(
+      throw new InsufficientCreditsError(
         'Tài khoản đã hết Credits. Vui lòng nạp thêm để tiếp tục dịch thuật!',
       );
     }
@@ -428,7 +429,7 @@ ${text}`;
       throw new Error('User not found');
     }
     if (user.credits < 10) {
-      throw new Error(
+      throw new InsufficientCreditsError(
         'Tài khoản cần có ít nhất 10 credits để thực hiện dịch video!',
       );
     }

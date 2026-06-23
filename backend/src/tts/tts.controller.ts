@@ -18,6 +18,7 @@ import { TtsService } from './tts.service';
 import { VOICE_CATALOG, isValidVoiceId } from './voices.config';
 import { SpeakDto } from './dto/speak.dto';
 import { SetPreferredVoiceDto } from './dto/set-preferred-voice.dto';
+import { InsufficientCreditsError } from '../credit/insufficient-credits.error';
 
 interface RequestWithUser {
   user: {
@@ -71,7 +72,11 @@ export class TtsController {
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : 'Text-to-speech failed';
-      res.status(400).json({ success: false, error: message });
+      res.status(400).json({
+        success: false,
+        error: message,
+        code: error instanceof InsufficientCreditsError ? 'INSUFFICIENT_CREDITS' : undefined,
+      });
     }
   }
 

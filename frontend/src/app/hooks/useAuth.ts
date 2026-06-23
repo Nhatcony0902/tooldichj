@@ -28,6 +28,13 @@ export function useAuth() {
   const [verifyOtp, setVerifyOtp] = useState("");
   const [resendCooldown, setResendCooldown] = useState(0);
 
+  // Forgot/Reset Password States
+  const [forgotPasswordStep, setForgotPasswordStep] = useState<"closed" | "request" | "reset">("closed");
+  const [fpEmail, setFpEmail] = useState("");
+  const [fpOtp, setFpOtp] = useState("");
+  const [fpNewPassword, setFpNewPassword] = useState("");
+  const [fpConfirmPassword, setFpConfirmPassword] = useState("");
+
   // MFA States
   const [mfaRequired, setMfaRequired] = useState(false);
   const [tempToken, setTempToken] = useState<string | null>(null);
@@ -283,6 +290,62 @@ export function useAuth() {
     }
   };
 
+  // Yêu cầu gửi mã đặt lại mật khẩu
+  const handleForgotPasswordRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!fpEmail) return;
+
+    try {
+      const response = await fetch("http://localhost:3001/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: fpEmail }),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        showToast("success", data.message || "Nếu email tồn tại, mã đặt lại mật khẩu đã được gửi.");
+        setForgotPasswordStep("reset");
+      } else {
+        showToast("error", data.message || "Không thể gửi yêu cầu đặt lại mật khẩu!");
+      }
+    } catch {
+      showToast("error", "Không thể kết nối đến server!");
+    }
+  };
+
+  // Đặt lại mật khẩu bằng mã OTP gửi qua mail
+  const handleResetPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!fpEmail || !fpOtp || !fpNewPassword) return;
+    if (fpNewPassword !== fpConfirmPassword) {
+      showToast("error", "Mật khẩu xác nhận không khớp!");
+      return;
+    }
+
+    try {
+      const response = await fetch("http://localhost:3001/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: fpEmail, otp: fpOtp, newPassword: fpNewPassword }),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        showToast("success", "Đặt lại mật khẩu thành công! Vui lòng đăng nhập.");
+        setAuthMode("login");
+        setAuthEmail(fpEmail);
+        setForgotPasswordStep("closed");
+        setFpEmail("");
+        setFpOtp("");
+        setFpNewPassword("");
+        setFpConfirmPassword("");
+      } else {
+        showToast("error", data.message || "Mã xác thực không đúng hoặc đã hết hạn!");
+      }
+    } catch {
+      showToast("error", "Không thể kết nối đến server!");
+    }
+  };
+
   // Bắt đầu cấu hình MFA (Lấy QR Code & Secret)
   const handleMfaSetupInit = async () => {
     if (!token) return;
@@ -389,6 +452,18 @@ export function useAuth() {
     verifyOtp,
     setVerifyOtp,
     resendCooldown,
+    forgotPasswordStep,
+    setForgotPasswordStep,
+    fpEmail,
+    setFpEmail,
+    fpOtp,
+    setFpOtp,
+    fpNewPassword,
+    setFpNewPassword,
+    fpConfirmPassword,
+    setFpConfirmPassword,
+    handleForgotPasswordRequest,
+    handleResetPasswordSubmit,
     mfaRequired,
     setMfaRequired,
     tempToken,

@@ -13,7 +13,7 @@ datasource db {
 
 model TranslationCache {
   id             Int      @id @default(autoincrement())
-  textHash       String   // Hash SHA256 của sourceText để lập chỉ mục nhanh
+  textHash       String // Hash SHA256 của sourceText để lập chỉ mục nhanh
   sourceText     String
   translatedText String
   sourceLang     String
@@ -25,28 +25,30 @@ model TranslationCache {
 }
 
 model User {
-  id               String     @id @default(uuid())
-  email            String     @unique
-  password         String
-  name             String     // Họ và tên người dùng
-  phone            String?    // Số điện thoại (tùy chọn)
-  avatarUrl        String?    // Ảnh đại diện (tùy chọn)
-  role             String     @default("USER") // USER, VIP, ADMIN
-  credits          Int        @default(100) // Tặng 100 credits khi đăng ký mới
-  mfaEnabled       Boolean    @default(false)
-  mfaSecret        String?
-  mfaPendingSecret String?
-  emailVerified           Boolean   @default(false)
-  emailVerifyOtp          String?
-  emailVerifyOtpExpiresAt DateTime?
-  emailVerifyLastSentAt   DateTime?
-  emailVerifyAttempts     Int       @default(0)
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
-  jobs             VideoJob[]
-  topupRequests    CreditTopupRequest[]
+  id                        String               @id @default(uuid())
+  email                     String               @unique
+  password                  String
+  name                      String // Họ và tên người dùng
+  phone                     String? // Số điện thoại (tùy chọn)
+  avatarUrl                 String? // Ảnh đại diện (tùy chọn)
+  role                      String               @default("USER") // USER, VIP, ADMIN
+  credits                   Int                  @default(100) // Tặng 100 credits khi đăng ký mới
+  mfaEnabled                Boolean              @default(false)
+  mfaSecret                 String?
+  mfaPendingSecret          String?
+  emailVerified             Boolean              @default(false)
+  emailVerifyOtp            String?
+  emailVerifyOtpExpiresAt   DateTime?
+  emailVerifyLastSentAt     DateTime?
+  emailVerifyAttempts       Int                  @default(0)
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
+  jobs                      VideoJob[]
+  topupRequests             CreditTopupRequest[]
   passwordResetOtp          String?
   passwordResetOtpExpiresAt DateTime?
+  passwordResetLastSentAt   DateTime?
+  passwordResetAttempts     Int                  @default(0)
   preferredVoiceId          String?
 }
 
@@ -54,7 +56,7 @@ model VideoJob {
   id              String   @id @default(uuid())
   fileName        String
   inputStorageKey String?
-  status          String   // PENDING, PROCESSING, COMPLETED, FAILED
+  status          String // PENDING, PROCESSING, COMPLETED, FAILED
   progress        Int      @default(0)
   stepDescription String   @default("Đang chờ...")
   targetLang      String   @default("vi")

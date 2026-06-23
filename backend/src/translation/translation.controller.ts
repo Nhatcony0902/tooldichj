@@ -15,6 +15,7 @@ import {
   Inject,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import * as path from 'path';
 import { TranslationService } from './translation.service';
@@ -57,6 +58,7 @@ export class TranslationController {
   ) {}
 
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
   @Post('translate')
   async translate(
     @Body() translateDto: TranslateDto,
@@ -101,6 +103,7 @@ export class TranslationController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post('video-job')
   @UseInterceptors(
     FileInterceptor('video', {
@@ -165,6 +168,8 @@ export class TranslationController {
     }
   }
 
+  // Frontend polls this every 3s while a job is active — never throttle it.
+  @SkipThrottle()
   @UseGuards(JwtAuthGuard)
   @Get('video-jobs')
   async getVideoJobs(@Request() req: RequestWithUser) {

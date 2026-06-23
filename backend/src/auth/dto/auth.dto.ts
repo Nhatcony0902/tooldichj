@@ -18,3 +18,13 @@ export class VerifyEmailDto {
 export class ResendOtpDto {
   email: string;
 }
+
+export class ForgotPasswordDto {
+  email: string;
+}
+
+export class ResetPasswordDto {
+  email: string;
+  otp: string;
+  newPassword: string;
+}

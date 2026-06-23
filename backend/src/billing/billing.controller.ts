@@ -7,6 +7,7 @@ import {
   Request,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminGuard } from './admin.guard';
 import { BillingService } from './billing.service';
@@ -26,6 +27,7 @@ export class BillingController {
   constructor(private readonly billingService: BillingService) {}
 
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('topup')
   createTopup(@Body() dto: CreateTopupDto, @Request() req: RequestWithUser) {
     return this.billingService.createTopupRequest(req.user.id, dto.amount);

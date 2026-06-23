@@ -47,4 +47,22 @@ export class MailService {
       `,
     });
   }
+
+  async sendPasswordResetEmail(to: string, otp: string): Promise<void> {
+    const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+
+    await this.getTransporter().sendMail({
+      from,
+      to,
+      subject: 'Mã đặt lại mật khẩu - ToolDichJ',
+      html: `
+        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+          <h2>Đặt lại mật khẩu</h2>
+          <p>Mã xác thực để đặt lại mật khẩu của bạn là:</p>
+          <p style="font-size: 32px; font-weight: 700; letter-spacing: 4px;">${otp}</p>
+          <p>Mã này có hiệu lực trong 10 phút. Nếu bạn không yêu cầu đặt lại mật khẩu, vui lòng bỏ qua email này.</p>
+        </div>
+      `,
+    });
+  }
 }

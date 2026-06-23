@@ -39,6 +39,18 @@ export default function Home() {
     verifyOtp,
     setVerifyOtp,
     resendCooldown,
+    forgotPasswordStep,
+    setForgotPasswordStep,
+    fpEmail,
+    setFpEmail,
+    fpOtp,
+    setFpOtp,
+    fpNewPassword,
+    setFpNewPassword,
+    fpConfirmPassword,
+    setFpConfirmPassword,
+    handleForgotPasswordRequest,
+    handleResetPasswordSubmit,
     mfaRequired,
     setMfaRequired,
     mfaCode,
@@ -158,6 +170,18 @@ export default function Home() {
           verifyOtp={verifyOtp}
           setVerifyOtp={setVerifyOtp}
           resendCooldown={resendCooldown}
+          forgotPasswordStep={forgotPasswordStep}
+          setForgotPasswordStep={setForgotPasswordStep}
+          fpEmail={fpEmail}
+          setFpEmail={setFpEmail}
+          fpOtp={fpOtp}
+          setFpOtp={setFpOtp}
+          fpNewPassword={fpNewPassword}
+          setFpNewPassword={setFpNewPassword}
+          fpConfirmPassword={fpConfirmPassword}
+          setFpConfirmPassword={setFpConfirmPassword}
+          handleForgotPasswordRequest={handleForgotPasswordRequest}
+          handleResetPasswordSubmit={handleResetPasswordSubmit}
           mfaRequired={mfaRequired}
           setMfaRequired={setMfaRequired}
           mfaCode={mfaCode}

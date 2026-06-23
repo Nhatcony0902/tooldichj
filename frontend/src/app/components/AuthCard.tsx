@@ -24,6 +24,18 @@ interface AuthCardProps {
   verifyOtp: string;
   setVerifyOtp: (otp: string) => void;
   resendCooldown: number;
+  forgotPasswordStep: "closed" | "request" | "reset";
+  setForgotPasswordStep: (step: "closed" | "request" | "reset") => void;
+  fpEmail: string;
+  setFpEmail: (email: string) => void;
+  fpOtp: string;
+  setFpOtp: (otp: string) => void;
+  fpNewPassword: string;
+  setFpNewPassword: (password: string) => void;
+  fpConfirmPassword: string;
+  setFpConfirmPassword: (password: string) => void;
+  handleForgotPasswordRequest: (e: React.FormEvent) => void;
+  handleResetPasswordSubmit: (e: React.FormEvent) => void;
   mfaRequired: boolean;
   setMfaRequired: (req: boolean) => void;
   mfaCode: string;
@@ -56,6 +68,18 @@ export default function AuthCard({
   verifyOtp,
   setVerifyOtp,
   resendCooldown,
+  forgotPasswordStep,
+  setForgotPasswordStep,
+  fpEmail,
+  setFpEmail,
+  fpOtp,
+  setFpOtp,
+  fpNewPassword,
+  setFpNewPassword,
+  fpConfirmPassword,
+  setFpConfirmPassword,
+  handleForgotPasswordRequest,
+  handleResetPasswordSubmit,
   mfaRequired,
   setMfaRequired,
   mfaCode,
@@ -67,7 +91,91 @@ export default function AuthCard({
 }: AuthCardProps) {
   return (
     <div className={styles.authContainer}>
-      {verifyRequired ? (
+      {forgotPasswordStep === "request" ? (
+        <div className={styles.authCard}>
+          <h2 className={styles.authTitle}>Quên mật khẩu?</h2>
+          <p className={styles.authSubtitle}>
+            Nhập email tài khoản, chúng tôi sẽ gửi mã xác thực để đặt lại mật khẩu.
+          </p>
+
+          <form onSubmit={handleForgotPasswordRequest} className={styles.authForm}>
+            <div className={styles.inputGroup}>
+              <span className={styles.inputLabel}>Địa chỉ Email</span>
+              <input
+                type="email"
+                className={styles.input}
+                placeholder="name@example.com"
+                value={fpEmail}
+                onChange={(e) => setFpEmail(e.target.value)}
+                required
+              />
+            </div>
+            <button type="submit" className={styles.authButton}>
+              Gửi mã xác thực
+            </button>
+          </form>
+
+          <div className={styles.authSwitch}>
+            <button className={styles.authSwitchLink} onClick={() => setForgotPasswordStep("closed")}>
+              Quay lại đăng nhập
+            </button>
+          </div>
+        </div>
+      ) : forgotPasswordStep === "reset" ? (
+        <div className={styles.authCard}>
+          <h2 className={styles.authTitle}>Đặt lại mật khẩu</h2>
+          <p className={styles.authSubtitle}>
+            Nhập mã xác thực đã gửi tới <strong>{fpEmail}</strong> và mật khẩu mới.
+          </p>
+
+          <form onSubmit={handleResetPasswordSubmit} className={styles.authForm}>
+            <div className={styles.inputGroup}>
+              <span className={styles.inputLabel}>Mã xác thực OTP</span>
+              <input
+                type="text"
+                maxLength={6}
+                pattern="\d{6}"
+                className={styles.input}
+                placeholder="123456"
+                value={fpOtp}
+                onChange={(e) => setFpOtp(e.target.value.replace(/\D/g, ""))}
+                required
+              />
+            </div>
+            <div className={styles.inputGroup}>
+              <span className={styles.inputLabel}>Mật khẩu mới</span>
+              <input
+                type="password"
+                className={styles.input}
+                placeholder="••••••••"
+                value={fpNewPassword}
+                onChange={(e) => setFpNewPassword(e.target.value)}
+                required
+              />
+            </div>
+            <div className={styles.inputGroup}>
+              <span className={styles.inputLabel}>Xác nhận mật khẩu mới</span>
+              <input
+                type="password"
+                className={styles.input}
+                placeholder="••••••••"
+                value={fpConfirmPassword}
+                onChange={(e) => setFpConfirmPassword(e.target.value)}
+                required
+              />
+            </div>
+            <button type="submit" className={styles.authButton}>
+              Đặt lại mật khẩu
+            </button>
+          </form>
+
+          <div className={styles.authSwitch}>
+            <button className={styles.authSwitchLink} onClick={() => setForgotPasswordStep("closed")}>
+              Quay lại đăng nhập
+            </button>
+          </div>
+        </div>
+      ) : verifyRequired ? (
         <div className={styles.authCard}>
           <h2 className={styles.authTitle}>Xác thực email</h2>
           <p className={styles.authSubtitle}>
@@ -288,6 +396,18 @@ export default function AuthCard({
                     required
                   />
                 </div>
+
+                <button
+                  type="button"
+                  className={styles.authSwitchLink}
+                  style={{ alignSelf: "flex-end", fontSize: "0.8rem" }}
+                  onClick={() => {
+                    setFpEmail(authEmail);
+                    setForgotPasswordStep("request");
+                  }}
+                >
+                  Quên mật khẩu?
+                </button>
               </>
             )}
 

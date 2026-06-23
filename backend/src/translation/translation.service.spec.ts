@@ -50,7 +50,10 @@ describe('TranslationService', () => {
 
       const result = await service.translate('u1', 'hello', 'en', 'vi');
 
-      expect(result).toBe('xin chào');
+      expect(result).toEqual({
+        translatedText: 'xin chào',
+        detectedLang: null,
+      });
       expect(geminiClient.getAi).not.toHaveBeenCalled();
       expect(creditService.deductCredit).toHaveBeenCalledWith('u1', 1);
     });
@@ -75,7 +78,10 @@ describe('TranslationService', () => {
 
       const result = await service.translate('u1', 'hello', 'en', 'vi');
 
-      expect(result).toBe('[Mock Dịch sang vi]: hello');
+      expect(result).toEqual({
+        translatedText: '[Mock Dịch sang vi]: hello',
+        detectedLang: null,
+      });
       expect(prisma.translationCache.create).toHaveBeenCalled();
       expect(creditService.deductCredit).toHaveBeenCalledWith('u1', 1);
     });
@@ -93,7 +99,10 @@ describe('TranslationService', () => {
 
       const result = await service.translate('u1', 'hello', 'en', 'vi');
 
-      expect(result).toBe('[Mock Dịch sang vi]: hello');
+      expect(result).toEqual({
+        translatedText: '[Mock Dịch sang vi]: hello',
+        detectedLang: null,
+      });
     });
 
     it('uses the real Gemini response and caches it when available', async () => {
@@ -111,7 +120,7 @@ describe('TranslationService', () => {
 
       const result = await service.translate('u1', 'hello', 'en', 'vi');
 
-      expect(result).toBe('xin chào');
+      expect(result).toEqual({ translatedText: 'xin chào', detectedLang: null });
       expect(prisma.translationCache.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ translatedText: 'xin chào' }),
       });
@@ -123,7 +132,7 @@ describe('TranslationService', () => {
 
       const result = await service.translate('u1', '   ', 'en', 'vi');
 
-      expect(result).toBe('');
+      expect(result).toEqual({ translatedText: '', detectedLang: null });
       expect(prisma.user.findUnique).not.toHaveBeenCalled();
       expect(creditService.deductCredit).not.toHaveBeenCalled();
     });
@@ -146,7 +155,7 @@ describe('TranslationService', () => {
       const shortText = 'Hello world. '.repeat(50); // well under 6000 chars
       const result = await service.translate('u1', shortText, 'en', 'vi');
 
-      expect(result).toBe('xin chào');
+      expect(result).toEqual({ translatedText: 'xin chào', detectedLang: null });
       expect(ai.models.generateContent).toHaveBeenCalledTimes(1);
       expect(creditService.deductCredit).toHaveBeenCalledWith('u1', 1);
     });
@@ -180,7 +189,8 @@ describe('TranslationService', () => {
         'u1',
         callCount,
       );
-      expect(result).toContain('translated:');
+      expect(result.translatedText).toContain('translated:');
+      expect(result.detectedLang).toBeNull();
     });
 
     it('a single very long paragraph (no blank-line breaks) falls back to sentence-splitting', async () => {
@@ -209,6 +219,165 @@ describe('TranslationService', () => {
         'u1',
         callCount,
       );
+    });
+  });
+
+  describe('translate — auto-detect', () => {
+    it('resolves a sane detectedLang and the correct translation for a valid combined-prompt response', async () => {
+      const ai = {
+        models: {
+          generateContent: jest.fn().mockResolvedValue({
+            text: '{"detectedLang":"vi","translatedText":"hello"}',
+          }),
+        },
+      };
+      const { service, prisma, creditService } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+      prisma.translationCache.create.mockResolvedValue({});
+
+      const result = await service.translate('u1', 'xin chào', 'auto', 'en');
+
+      expect(result).toEqual({
+        translatedText: 'hello',
+        detectedLang: 'vi',
+      });
+      expect(ai.models.generateContent).toHaveBeenCalledTimes(1);
+      expect(creditService.deductCredit).toHaveBeenCalledWith('u1', 1);
+    });
+
+    it('strips markdown fences before parsing the combined detect+translate JSON response', async () => {
+      const ai = {
+        models: {
+          generateContent: jest.fn().mockResolvedValue({
+            text: '```json\n{"detectedLang":"en","translatedText":"xin chào"}\n```',
+          }),
+        },
+      };
+      const { service, prisma } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+      prisma.translationCache.create.mockResolvedValue({});
+
+      const result = await service.translate('u1', 'hello', 'auto', 'vi');
+
+      expect(result).toEqual({
+        translatedText: 'xin chào',
+        detectedLang: 'en',
+      });
+    });
+
+    it('throws a manual-select error when the detected language is not in the allowlist', async () => {
+      const ai = {
+        models: {
+          generateContent: jest.fn().mockResolvedValue({
+            text: '{"detectedLang":"xx","translatedText":"???"}',
+          }),
+        },
+      };
+      const { service, prisma } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.translate('u1', 'OK', 'auto', 'en'),
+      ).rejects.toThrow(/please select it manually/);
+    });
+
+    it('throws a manual-select error when the Gemini response is not parseable JSON', async () => {
+      const ai = {
+        models: {
+          generateContent: jest
+            .fn()
+            .mockResolvedValue({ text: 'not json at all' }),
+        },
+      };
+      const { service, prisma } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.translate('u1', 'gibberish', 'auto', 'en'),
+      ).rejects.toThrow(/please select it manually/);
+    });
+
+    it('detects the language ONCE on a multi-chunk auto-detect text and reuses it for subsequent chunks', async () => {
+      let callIndex = 0;
+      const ai = {
+        models: {
+          generateContent: jest.fn().mockImplementation(() => {
+            callIndex += 1;
+            if (callIndex === 1) {
+              // First call: the combined detect+translate prompt for chunk 1.
+              return Promise.resolve({
+                text: '{"detectedLang":"vi","translatedText":"chunk1-en"}',
+              });
+            }
+            // Subsequent calls: the normal (non-auto) translate prompt,
+            // now using the resolved "vi" as sourceLang.
+            return Promise.resolve({ text: `chunk${callIndex}-en` });
+          }),
+        },
+      };
+      const { service, prisma, creditService } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 100 });
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+      prisma.translationCache.create.mockResolvedValue({});
+
+      const paragraph = 'Đây là một đoạn văn bản tiếng Việt dài. '.repeat(150); // ~6150 chars
+      const longText = [paragraph, paragraph, paragraph].join('\n\n'); // multi-chunk
+
+      const result = await service.translate('u1', longText, 'auto', 'en');
+
+      expect(result.detectedLang).toBe('vi');
+      const callCount = ai.models.generateContent.mock.calls.length;
+      expect(callCount).toBeGreaterThan(1);
+
+      // Exactly one call used the combined detect+translate prompt shape.
+      const combinedPromptCalls = ai.models.generateContent.mock.calls.filter(
+        ([{ contents }]: [{ contents: string }]) =>
+          contents.includes('Detect the language of the following text'),
+      );
+      expect(combinedPromptCalls).toHaveLength(1);
+
+      // The remaining calls use the normal translate prompt with the
+      // resolved "vi" substituted in place of the literal "auto".
+      const normalPromptCalls = ai.models.generateContent.mock.calls.filter(
+        ([{ contents }]: [{ contents: string }]) =>
+          contents.includes('Translate the following text from'),
+      );
+      expect(normalPromptCalls.length).toBe(callCount - 1);
+      for (const [{ contents }] of normalPromptCalls) {
+        expect(contents).toContain('from "vi"');
+      }
+
+      expect(creditService.deductCredit).toHaveBeenCalledWith(
+        'u1',
+        callCount,
+      );
+    });
+
+    it('never serves a whole-text cache hit when sourceLang is "auto" (always re-detects)', async () => {
+      const ai = {
+        models: {
+          generateContent: jest.fn().mockResolvedValue({
+            text: '{"detectedLang":"ja","translatedText":"hi"}',
+          }),
+        },
+      };
+      const { service, prisma } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      // Even if a row exists keyed on the literal "auto", it must never be
+      // served — a cache hit would carry no real detectedLang.
+      prisma.translationCache.findUnique.mockResolvedValue({
+        translatedText: 'stale-cached-value',
+      });
+      prisma.translationCache.create.mockResolvedValue({});
+
+      const result = await service.translate('u1', 'こんにちは', 'auto', 'en');
+
+      expect(result).toEqual({ translatedText: 'hi', detectedLang: 'ja' });
+      expect(ai.models.generateContent).toHaveBeenCalledTimes(1);
     });
   });
 

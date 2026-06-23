@@ -14,6 +14,21 @@ interface CreateVideoJobParams {
 
 const CHUNK_SIZE = 6000;
 
+// ISO 639-1 codes matching the frontend source-language dropdown's existing
+// options. Any auto-detect response outside this set is treated as an
+// unreliable detection rather than risking a garbled silent mistranslation.
+const SUPPORTED_LANG_CODES = ['en', 'vi', 'zh', 'ja'];
+
+function stripMarkdownFence(text: string): string {
+  const match = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  return match ? match[1] : text;
+}
+
+interface DetectAndTranslateResult {
+  detectedLang: string;
+  translatedText: string;
+}
+
 @Injectable()
 export class TranslationService {
   private readonly logger = new Logger(TranslationService.name);
@@ -38,9 +53,9 @@ export class TranslationService {
     sourceLang: string,
     targetLang: string,
     chargeCredit = true,
-  ): Promise<string> {
+  ): Promise<{ translatedText: string; detectedLang: string | null }> {
     if (!text || text.trim() === '') {
-      return '';
+      return { translatedText: '', detectedLang: null };
     }
 
     const user = await this.prisma.user.findUnique({
@@ -59,32 +74,40 @@ export class TranslationService {
     const textHash = this.getHash(text);
     const sLang = sourceLang.toLowerCase().trim();
     const tLang = targetLang.toLowerCase().trim();
+    const isAutoDetect = sLang === 'auto';
 
-    let cachedTranslation = '';
-    try {
-      const cached = await this.prisma.translationCache.findUnique({
-        where: {
-          textHash_sourceLang_targetLang: {
-            textHash,
-            sourceLang: sLang,
-            targetLang: tLang,
+    // When sourceLang is 'auto', the whole-text cache lookup is skipped
+    // entirely: a cache hit keyed on the literal string "auto" carries no
+    // real detected language, and detection must run reliably whenever the
+    // caller asked for it. Going through the per-chunk path instead always
+    // resolves a real detectedLang (detected once on chunk 1, see below).
+    if (!isAutoDetect) {
+      let cachedTranslation = '';
+      try {
+        const cached = await this.prisma.translationCache.findUnique({
+          where: {
+            textHash_sourceLang_targetLang: {
+              textHash,
+              sourceLang: sLang,
+              targetLang: tLang,
+            },
           },
-        },
-      });
+        });
 
-      if (cached) {
-        this.logger.log(`Cache hit for hash: ${textHash}`);
-        cachedTranslation = cached.translatedText;
+        if (cached) {
+          this.logger.log(`Cache hit for hash: ${textHash}`);
+          cachedTranslation = cached.translatedText;
+        }
+      } catch (err) {
+        this.logger.error('Failed to query database cache:', err);
       }
-    } catch (err) {
-      this.logger.error('Failed to query database cache:', err);
-    }
 
-    if (cachedTranslation) {
-      if (chargeCredit) {
-        await this.creditService.deductCredit(userId, 1);
+      if (cachedTranslation) {
+        if (chargeCredit) {
+          await this.creditService.deductCredit(userId, 1);
+        }
+        return { translatedText: cachedTranslation, detectedLang: null };
       }
-      return cachedTranslation;
     }
 
     // Cache miss on the whole text: split into paragraph/sentence-aware
@@ -93,10 +116,36 @@ export class TranslationService {
     // cache-lookup -> Gemini-call -> cache-write path per chunk.
     const chunks = this.splitIntoChunks(text);
     const translatedChunks: string[] = [];
+    let resolvedDetectedLang: string | null = null;
 
     for (const chunk of chunks) {
+      // Detect-once-reuse-for-rest: only the FIRST chunk runs the combined
+      // detect+translate prompt when sourceLang is 'auto'. Once resolved,
+      // subsequent chunks use the normal (non-auto) prompt with the
+      // resolved language substituted in place of the literal "auto".
+      if (isAutoDetect && resolvedDetectedLang === null) {
+        const { detectedLang, translatedText } =
+          await this.detectAndTranslateChunk(chunk, targetLang, tLang);
+        resolvedDetectedLang = detectedLang;
+        translatedChunks.push(translatedText);
+        continue;
+      }
+
+      const effectiveSourceLang = isAutoDetect
+        ? (resolvedDetectedLang as string)
+        : sourceLang;
+      const effectiveSLang = isAutoDetect
+        ? (resolvedDetectedLang as string)
+        : sLang;
+
       translatedChunks.push(
-        await this.translateChunk(chunk, sourceLang, targetLang, sLang, tLang),
+        await this.translateChunk(
+          chunk,
+          effectiveSourceLang,
+          targetLang,
+          effectiveSLang,
+          tLang,
+        ),
       );
     }
 
@@ -106,7 +155,7 @@ export class TranslationService {
       await this.creditService.deductCredit(userId, chunks.length);
     }
 
-    return translatedText;
+    return { translatedText, detectedLang: resolvedDetectedLang };
   }
 
   private async translateChunk(
@@ -182,6 +231,79 @@ ${text}`;
     }
 
     return translatedText;
+  }
+
+  private async detectAndTranslateChunk(
+    text: string,
+    targetLang: string,
+    tLang: string,
+  ): Promise<DetectAndTranslateResult> {
+    const ai = this.geminiClient.getAi();
+
+    if (!ai) {
+      // No Gemini client configured: there is no real way to detect a
+      // language without a model call, so mock-translate and surface the
+      // honest "unknown" signal rather than guessing a fake detectedLang.
+      throw new Error(
+        'Could not reliably detect the source language; please select it manually',
+      );
+    }
+
+    const prompt = `Detect the language of the following text (ISO 639-1 code, e.g. "en", "vi", "ja") and translate it to "${targetLang}".
+Return ONLY a JSON object, no markdown fences, in this exact shape:
+{"detectedLang":"<iso-code>","translatedText":"<the translated text>"}
+Do not add any introductory phrases, explanations, notes, or extra markdown formatting in the translatedText value. Maintain the original format and line breaks within translatedText.
+
+Text to translate:
+${text}`;
+
+    let parsed: DetectAndTranslateResult;
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+      });
+      const raw = response.text?.trim() || '';
+      parsed = JSON.parse(stripMarkdownFence(raw)) as DetectAndTranslateResult;
+      this.logger.log(`Detected language via Gemini: ${parsed.detectedLang}`);
+    } catch (err) {
+      this.logger.error(
+        'Gemini detect+translate call failed or returned unparseable JSON:',
+        err,
+      );
+      throw new Error(
+        'Could not reliably detect the source language; please select it manually',
+      );
+    }
+
+    const detectedLang = parsed.detectedLang?.toLowerCase().trim();
+    if (!detectedLang || !SUPPORTED_LANG_CODES.includes(detectedLang)) {
+      throw new Error(
+        'Could not reliably detect the source language; please select it manually',
+      );
+    }
+
+    const translatedText = parsed.translatedText?.trim() || '';
+
+    if (translatedText) {
+      const textHash = this.getHash(text);
+      try {
+        await this.prisma.translationCache.create({
+          data: {
+            textHash,
+            sourceText: text,
+            translatedText,
+            sourceLang: detectedLang,
+            targetLang: tLang,
+          },
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        this.logger.warn(`Failed to write to cache: ${message}`);
+      }
+    }
+
+    return { detectedLang, translatedText };
   }
 
   private mockTranslate(text: string, targetLang: string): string {

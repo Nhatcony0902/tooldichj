@@ -84,18 +84,20 @@ export class TranslationController {
     }
 
     try {
-      const translatedText = await this.translationService.translate(
-        userId,
-        text,
-        sourceLang,
-        targetLang,
-      );
+      const { translatedText, detectedLang } =
+        await this.translationService.translate(
+          userId,
+          text,
+          sourceLang,
+          targetLang,
+        );
       return {
         success: true,
         text,
         translatedText,
         sourceLang,
         targetLang,
+        detectedLang,
       };
     } catch (error: unknown) {
       const errorMessage =

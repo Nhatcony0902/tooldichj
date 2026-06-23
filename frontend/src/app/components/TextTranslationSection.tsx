@@ -20,6 +20,15 @@ interface TextTranslationSectionProps {
 const CHUNK_SIZE = 6000;
 const MAX_TEXT_LENGTH = 20000;
 
+// Mirrors backend translation.service.ts's SUPPORTED_LANG_CODES allowlist —
+// used to render a human-readable label for the auto-detected language.
+const LANG_NAMES: Record<string, string> = {
+  en: "Tiếng Anh",
+  vi: "Tiếng Việt",
+  zh: "Tiếng Trung",
+  ja: "Tiếng Nhật",
+};
+
 export default function TextTranslationSection({
   token,
   user,
@@ -38,6 +47,7 @@ export default function TextTranslationSection({
   const [history, setHistory] = useState<TranslationHistory[]>([]);
   const [selectedVoiceId, setSelectedVoiceId] = useState("Kore");
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [detectedLang, setDetectedLang] = useState<string | null>(null);
 
   // Initialize selected voice from user preferences
   useEffect(() => {
@@ -132,6 +142,7 @@ export default function TextTranslationSection({
       const data = await response.json();
       if (data.success) {
         setOutputText(data.translatedText);
+        setDetectedLang(sourceLang === "auto" ? data.detectedLang ?? null : null);
 
         // Cập nhật lại số dư credits hiển thị
         refreshUser(token);
@@ -150,9 +161,11 @@ export default function TextTranslationSection({
         localStorage.setItem("tooldichj_history", JSON.stringify(updatedHistory));
       } else {
         setOutputText(`[Lỗi]: ${data.error || "Không thể dịch thuật"}`);
+        setDetectedLang(null);
       }
     } catch {
       setOutputText("[Lỗi kết nối]: Vui lòng kiểm tra lại Server Backend!");
+      setDetectedLang(null);
     } finally {
       setIsTranslating(false);
     }
@@ -162,8 +175,13 @@ export default function TextTranslationSection({
   const estimatedChunks = Math.max(1, Math.ceil(inputText.length / CHUNK_SIZE));
 
   const handleSwapLanguages = () => {
-    setSourceLang(targetLang);
-    setTargetLang(sourceLang);
+    // Auto-detect has no symmetric "auto-detect target" concept, so when
+    // source is "auto" the language fields are left untouched — only the
+    // text content swaps.
+    if (sourceLang !== "auto") {
+      setSourceLang(targetLang);
+      setTargetLang(sourceLang);
+    }
     setInputText(outputText);
     setOutputText(inputText);
   };
@@ -184,6 +202,7 @@ export default function TextTranslationSection({
             value={sourceLang}
             onChange={(e) => setSourceLang(e.target.value)}
           >
+            <option value="auto">🌐 Tự động nhận diện</option>
             <option value="en">Tiếng Anh (EN)</option>
             <option value="vi">Tiếng Việt (VI)</option>
             <option value="zh">Tiếng Trung (ZH)</option>
@@ -236,6 +255,11 @@ export default function TextTranslationSection({
             <option value="ja">Tiếng Nhật (JA)</option>
           </select>
         </div>
+        {sourceLang === "auto" && detectedLang && (
+          <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "0.5rem" }}>
+            Đã nhận diện: {LANG_NAMES[detectedLang] || detectedLang}
+          </div>
+        )}
         <textarea
           className={styles.textarea}
           placeholder="Kết quả hiển thị tại đây..."

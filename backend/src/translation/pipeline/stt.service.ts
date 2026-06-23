@@ -89,8 +89,12 @@ async function fallbackWholeAudioTranscript(
     );
     return {
       // Source language is unknown in this fallback path (no per-segment
-      // detection); "auto" is an honest signal, not a real ISO code.
-      language: 'auto',
+      // detection). Deliberately NOT "auto" — that string is reserved by
+      // TranslationService as the user-facing auto-detect trigger, and
+      // forwarding it here would make every per-segment translate() call
+      // run the strict (throw-on-failure) detect+translate path instead of
+      // the resilient mock-fallback one video jobs rely on.
+      language: 'unknown',
       segments: [{ start: 0, end: duration || 1, text }],
     };
   } catch (err) {

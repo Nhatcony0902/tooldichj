@@ -5,6 +5,12 @@ import styles from "@/app/page.module.css";
 import VoiceSelector, { type Voice } from "./VoiceSelector";
 import { User, VideoJob } from "../types";
 
+// Mirrors backend's MAX_UPLOAD_MB (translation.controller.ts) — the backend
+// value is authoritative since multer enforces it. NEXT_PUBLIC_* is inlined
+// at build time, so this must be rebuilt if the backend value changes.
+const MAX_UPLOAD_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB) || 100;
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+
 interface VideoTranslationSectionProps {
   token: string;
   user: User | null;
@@ -98,6 +104,11 @@ export default function VideoTranslationSection({
       return;
     }
 
+    if (videoFile.size > MAX_UPLOAD_BYTES) {
+      showToast("error", `File quá lớn. Tối đa ${MAX_UPLOAD_MB}MB.`);
+      return;
+    }
+
     try {
       const formData = new FormData();
       formData.append("video", videoFile);
@@ -180,7 +191,7 @@ export default function VideoTranslationSection({
                 {videoFile ? videoFile.name : "Kéo & thả video hoặc nhấp để tải lên"}
               </p>
               <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>
-                Hỗ trợ MP4, MOV, MKV (Tối đa 50MB)
+                Hỗ trợ MP4, MOV, MKV (Tối đa {MAX_UPLOAD_MB}MB)
               </p>
             </div>
             <input
@@ -188,7 +199,19 @@ export default function VideoTranslationSection({
               id="fileInput"
               accept="video/*"
               style={{ display: "none" }}
-              onChange={(e) => setVideoFile(e.target.files?.[0] || null)}
+              onChange={(e) => {
+                const file = e.target.files?.[0] || null;
+                if (file && file.size > MAX_UPLOAD_BYTES) {
+                  showToast(
+                    "error",
+                    `File quá lớn (${(file.size / 1024 / 1024).toFixed(1)}MB). Tối đa ${MAX_UPLOAD_MB}MB.`
+                  );
+                  e.target.value = "";
+                  setVideoFile(null);
+                  return;
+                }
+                setVideoFile(file);
+              }}
             />
           </div>
 

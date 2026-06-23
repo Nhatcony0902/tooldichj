@@ -106,6 +106,13 @@ export class TranslationService {
         if (chargeCredit) {
           await this.creditService.deductCredit(userId, 1);
         }
+        await this.recordHistory(
+          userId,
+          text,
+          cachedTranslation,
+          sourceLang,
+          targetLang,
+        );
         return { translatedText: cachedTranslation, detectedLang: null };
       }
     }
@@ -155,7 +162,62 @@ export class TranslationService {
       await this.creditService.deductCredit(userId, chunks.length);
     }
 
+    if (translatedText) {
+      const resolvedSourceLang = resolvedDetectedLang ?? sourceLang;
+      await this.recordHistory(
+        userId,
+        text,
+        translatedText,
+        resolvedSourceLang,
+        targetLang,
+      );
+    }
+
     return { translatedText, detectedLang: resolvedDetectedLang };
+  }
+
+  private async recordHistory(
+    userId: string,
+    sourceText: string,
+    translatedText: string,
+    sourceLang: string,
+    targetLang: string,
+  ): Promise<void> {
+    try {
+      await this.prisma.translationHistory.create({
+        data: { userId, sourceText, translatedText, sourceLang, targetLang },
+      });
+      const count = await this.prisma.translationHistory.count({
+        where: { userId },
+      });
+      if (count > 50) {
+        const stale = await this.prisma.translationHistory.findMany({
+          where: { userId },
+          orderBy: { createdAt: 'asc' },
+          take: count - 50,
+          select: { id: true },
+        });
+        await this.prisma.translationHistory.deleteMany({
+          where: { id: { in: stale.map((s) => s.id) } },
+        });
+      }
+    } catch (err) {
+      // History is a convenience feature, not core to translation — never let
+      // a history-write failure surface as a translate-request failure.
+      this.logger.warn('Failed to record translation history:', err);
+    }
+  }
+
+  async getHistory(userId: string) {
+    return this.prisma.translationHistory.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+  }
+
+  async clearHistory(userId: string): Promise<void> {
+    await this.prisma.translationHistory.deleteMany({ where: { userId } });
   }
 
   private async translateChunk(

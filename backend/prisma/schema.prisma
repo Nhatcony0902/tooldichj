@@ -11,6 +11,19 @@ datasource db {
   provider = "postgresql"
 }
 
+model TranslationHistory {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceText     String
+  translatedText String
+  sourceLang     String // resolved code, never the literal "auto"
+  targetLang     String
+  createdAt      DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
 model TranslationCache {
   id             Int      @id @default(autoincrement())
   textHash       String // Hash SHA256 của sourceText để lập chỉ mục nhanh
@@ -45,6 +58,7 @@ model User {
   updatedAt                 DateTime             @updatedAt
   jobs                      VideoJob[]
   topupRequests             CreditTopupRequest[]
+  historyEntries            TranslationHistory[]
   passwordResetOtp          String?
   passwordResetOtpExpiresAt DateTime?
   passwordResetLastSentAt   DateTime?

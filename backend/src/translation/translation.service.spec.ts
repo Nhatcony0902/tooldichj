@@ -7,6 +7,12 @@ function buildService(opts: { ai: any } = { ai: null }) {
       findUnique: jest.fn(),
       create: jest.fn(),
     },
+    translationHistory: {
+      create: jest.fn().mockResolvedValue({}),
+      count: jest.fn().mockResolvedValue(1),
+      findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn().mockResolvedValue({}),
+    },
     videoJob: {
       create: jest.fn(),
       findMany: jest.fn(),
@@ -378,6 +384,160 @@ describe('TranslationService', () => {
 
       expect(result).toEqual({ translatedText: 'hi', detectedLang: 'ja' });
       expect(ai.models.generateContent).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('translate — history recording', () => {
+    it('records a history row with the manually-selected sourceLang when not auto-detecting', async () => {
+      const ai = {
+        models: {
+          generateContent: jest
+            .fn()
+            .mockResolvedValue({ text: 'xin chào' }),
+        },
+      };
+      const { service, prisma } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+      prisma.translationCache.create.mockResolvedValue({});
+
+      await service.translate('u1', 'hello', 'en', 'vi');
+
+      expect(prisma.translationHistory.create).toHaveBeenCalledWith({
+        data: {
+          userId: 'u1',
+          sourceText: 'hello',
+          translatedText: 'xin chào',
+          sourceLang: 'en',
+          targetLang: 'vi',
+        },
+      });
+    });
+
+    it('records the DETECTED language code (never the literal "auto") when auto-detecting', async () => {
+      const ai = {
+        models: {
+          generateContent: jest.fn().mockResolvedValue({
+            text: '{"detectedLang":"vi","translatedText":"hello"}',
+          }),
+        },
+      };
+      const { service, prisma } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+      prisma.translationCache.create.mockResolvedValue({});
+
+      await service.translate('u1', 'xin chào', 'auto', 'en');
+
+      expect(prisma.translationHistory.create).toHaveBeenCalledWith({
+        data: {
+          userId: 'u1',
+          sourceText: 'xin chào',
+          translatedText: 'hello',
+          sourceLang: 'vi',
+          targetLang: 'en',
+        },
+      });
+      const call = prisma.translationHistory.create.mock.calls[0][0];
+      expect(call.data.sourceLang).not.toBe('auto');
+    });
+
+    it('does not throw or fail translate() when the history write fails', async () => {
+      const ai = {
+        models: {
+          generateContent: jest
+            .fn()
+            .mockResolvedValue({ text: 'xin chào' }),
+        },
+      };
+      const { service, prisma } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+      prisma.translationCache.create.mockResolvedValue({});
+      prisma.translationHistory.create.mockRejectedValue(new Error('db down'));
+
+      const result = await service.translate('u1', 'hello', 'en', 'vi');
+
+      expect(result).toEqual({ translatedText: 'xin chào', detectedLang: null });
+    });
+
+    it('prunes the oldest rows once a user exceeds 50 history rows', async () => {
+      const ai = {
+        models: {
+          generateContent: jest
+            .fn()
+            .mockResolvedValue({ text: 'xin chào' }),
+        },
+      };
+      const { service, prisma } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+      prisma.translationCache.create.mockResolvedValue({});
+      prisma.translationHistory.count.mockResolvedValue(51);
+      prisma.translationHistory.findMany.mockResolvedValue([
+        { id: 'oldest-1' },
+      ]);
+
+      await service.translate('u1', 'hello', 'en', 'vi');
+
+      expect(prisma.translationHistory.findMany).toHaveBeenCalledWith({
+        where: { userId: 'u1' },
+        orderBy: { createdAt: 'asc' },
+        take: 1,
+        select: { id: true },
+      });
+      expect(prisma.translationHistory.deleteMany).toHaveBeenCalledWith({
+        where: { id: { in: ['oldest-1'] } },
+      });
+    });
+
+    it('does not prune when the row count is at or below 50', async () => {
+      const ai = {
+        models: {
+          generateContent: jest
+            .fn()
+            .mockResolvedValue({ text: 'xin chào' }),
+        },
+      };
+      const { service, prisma } = buildService({ ai });
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.translationCache.findUnique.mockResolvedValue(null);
+      prisma.translationCache.create.mockResolvedValue({});
+      prisma.translationHistory.count.mockResolvedValue(50);
+
+      await service.translate('u1', 'hello', 'en', 'vi');
+
+      expect(prisma.translationHistory.findMany).not.toHaveBeenCalled();
+      expect(prisma.translationHistory.deleteMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getHistory', () => {
+    it('returns the user history, newest first, capped at 50', async () => {
+      const { service, prisma } = buildService();
+      const rows = [{ id: 'h1' }, { id: 'h2' }];
+      prisma.translationHistory.findMany.mockResolvedValue(rows);
+
+      const result = await service.getHistory('u1');
+
+      expect(result).toBe(rows);
+      expect(prisma.translationHistory.findMany).toHaveBeenCalledWith({
+        where: { userId: 'u1' },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      });
+    });
+  });
+
+  describe('clearHistory', () => {
+    it('deletes all history rows for the given user', async () => {
+      const { service, prisma } = buildService();
+
+      await service.clearHistory('u1');
+
+      expect(prisma.translationHistory.deleteMany).toHaveBeenCalledWith({
+        where: { userId: 'u1' },
+      });
     });
   });
 

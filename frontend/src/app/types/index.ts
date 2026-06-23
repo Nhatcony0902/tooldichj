@@ -1,5 +1,5 @@
 export interface TranslationHistory {
-  id: string;
+  id: string; // real backend UUID (TranslationHistory.id), not a client-generated random string
   sourceText: string;
   translatedText: string;
   sourceLang: string;

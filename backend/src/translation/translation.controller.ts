@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Delete,
   Body,
   Param,
   BadRequestException,
@@ -175,6 +176,20 @@ export class TranslationController {
         error instanceof Error ? error.message : 'Failed to create video job';
       return { success: false, error: errorMessage };
     }
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('history')
+  async getHistory(@Request() req: RequestWithUser) {
+    const history = await this.translationService.getHistory(req.user.id);
+    return { success: true, history };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('history')
+  async clearHistory(@Request() req: RequestWithUser) {
+    await this.translationService.clearHistory(req.user.id);
+    return { success: true };
   }
 
   // Frontend polls this every 3s while a job is active — never throttle it.

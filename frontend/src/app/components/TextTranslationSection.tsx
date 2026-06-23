@@ -56,17 +56,40 @@ export default function TextTranslationSection({
     }
   }, [user]);
 
-  // Load history on mount
-  useEffect(() => {
-    const savedHistory = localStorage.getItem("tooldichj_history");
-    if (savedHistory) {
-      try {
-        setHistory(JSON.parse(savedHistory));
-      } catch (err) {
-        console.error("Error parsing translation history:", err);
+  // Fetch lịch sử dịch từ Backend
+  const fetchHistory = useCallback(async (authToken: string) => {
+    try {
+      const response = await fetch("http://localhost:3001/translation/history", {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await response.json();
+      if (data.success) {
+        // Backend rows carry `createdAt` (ISO string); map it to the
+        // existing `timestamp` display field so the interface shape stays
+        // unchanged for the rest of the component.
+        const mapped: TranslationHistory[] = data.history.map(
+          (row: TranslationHistory & { createdAt: string }) => ({
+            id: row.id,
+            sourceText: row.sourceText,
+            translatedText: row.translatedText,
+            sourceLang: row.sourceLang,
+            targetLang: row.targetLang,
+            timestamp: new Date(row.createdAt).toLocaleTimeString(),
+          }),
+        );
+        setHistory(mapped);
       }
+    } catch (err) {
+      console.error("Error fetching translation history:", err);
     }
   }, []);
+
+  // Load history on mount
+  useEffect(() => {
+    if (token) {
+      fetchHistory(token);
+    }
+  }, [token, fetchHistory]);
 
   // Phát một blob audio
   const playAudioBlob = async (blob: Blob) => {
@@ -147,18 +170,9 @@ export default function TextTranslationSection({
         // Cập nhật lại số dư credits hiển thị
         refreshUser(token);
 
-        // Lưu vào lịch sử dịch
-        const newRecord: TranslationHistory = {
-          id: Math.random().toString(36).substring(2, 9),
-          sourceText: inputText,
-          translatedText: data.translatedText,
-          sourceLang,
-          targetLang,
-          timestamp: new Date().toLocaleTimeString(),
-        };
-        const updatedHistory = [newRecord, ...history.slice(0, 9)];
-        setHistory(updatedHistory);
-        localStorage.setItem("tooldichj_history", JSON.stringify(updatedHistory));
+        // Backend đã ghi lịch sử dịch như một side-effect của lần dịch này —
+        // chỉ cần tải lại danh sách từ server.
+        fetchHistory(token);
       } else {
         setOutputText(`[Lỗi]: ${data.error || "Không thể dịch thuật"}`);
         setDetectedLang(null);
@@ -186,9 +200,17 @@ export default function TextTranslationSection({
     setOutputText(inputText);
   };
 
-  const clearHistory = () => {
-    setHistory([]);
-    localStorage.removeItem("tooldichj_history");
+  const clearHistory = async () => {
+    if (!token) return;
+    try {
+      await fetch("http://localhost:3001/translation/history", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setHistory([]);
+    } catch (err) {
+      console.error("Error clearing translation history:", err);
+    }
   };
 
   return (

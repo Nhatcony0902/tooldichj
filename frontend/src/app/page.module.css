@@ -520,6 +520,23 @@
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3), 0 0 15px rgba(239, 68, 68, 0.15);
 }
 
+.toastAction {
+  color: var(--primary);
+  font-weight: 600;
+  cursor: pointer;
+  background: none;
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+  padding: 0.25rem 0.6rem;
+  font-family: inherit;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.toastAction:hover {
+  text-decoration: underline;
+}
+
 @keyframes slideIn {
   from {
     transform: translateY(-20px) scale(0.95);

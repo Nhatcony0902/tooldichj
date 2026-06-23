@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Delete,
   Body,
   Param,
   BadRequestException,
@@ -33,6 +34,7 @@ import {
   outputModeIncludesDub,
 } from './pipeline/output-mode';
 import { isValidVoiceId } from '../tts/voices.config';
+import { InsufficientCreditsError } from '../credit/insufficient-credits.error';
 
 interface RequestWithUser {
   user: {
@@ -47,6 +49,8 @@ const MAX_FILE_SIZE =
 
 const OUTPUT_KINDS = ['srt', 'video', 'audio'] as const;
 type OutputKind = (typeof OUTPUT_KINDS)[number];
+
+const MAX_TEXT_LENGTH = 20000;
 
 @Controller('translation')
 export class TranslationController {
@@ -70,6 +74,11 @@ export class TranslationController {
     if (!text) {
       throw new BadRequestException('Text is required');
     }
+    if (text.length > MAX_TEXT_LENGTH) {
+      throw new BadRequestException(
+        `Text exceeds the maximum length of ${MAX_TEXT_LENGTH.toLocaleString()} characters (got ${text.length})`,
+      );
+    }
     if (!sourceLang || !targetLang) {
       throw new BadRequestException(
         'Source language and target language are required',
@@ -77,18 +86,20 @@ export class TranslationController {
     }
 
     try {
-      const translatedText = await this.translationService.translate(
-        userId,
-        text,
-        sourceLang,
-        targetLang,
-      );
+      const { translatedText, detectedLang } =
+        await this.translationService.translate(
+          userId,
+          text,
+          sourceLang,
+          targetLang,
+        );
       return {
         success: true,
         text,
         translatedText,
         sourceLang,
         targetLang,
+        detectedLang,
       };
     } catch (error: unknown) {
       const errorMessage =
@@ -98,6 +109,7 @@ export class TranslationController {
       return {
         success: false,
         error: errorMessage,
+        code: error instanceof InsufficientCreditsError ? 'INSUFFICIENT_CREDITS' : undefined,
       };
     }
   }
@@ -164,8 +176,26 @@ export class TranslationController {
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : 'Failed to create video job';
-      return { success: false, error: errorMessage };
+      return {
+        success: false,
+        error: errorMessage,
+        code: error instanceof InsufficientCreditsError ? 'INSUFFICIENT_CREDITS' : undefined,
+      };
     }
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('history')
+  async getHistory(@Request() req: RequestWithUser) {
+    const history = await this.translationService.getHistory(req.user.id);
+    return { success: true, history };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('history')
+  async clearHistory(@Request() req: RequestWithUser) {
+    await this.translationService.clearHistory(req.user.id);
+    return { success: true };
   }
 
   // Frontend polls this every 3s while a job is active — never throttle it.

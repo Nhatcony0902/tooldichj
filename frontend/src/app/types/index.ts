@@ -1,5 +1,5 @@
 export interface TranslationHistory {
-  id: string;
+  id: string; // real backend UUID (TranslationHistory.id), not a client-generated random string
   sourceText: string;
   translatedText: string;
   sourceLang: string;
@@ -26,6 +26,8 @@ export interface User {
   id: string;
   email: string;
   name: string;
+  phone?: string | null;
+  avatarUrl?: string | null;
   role?: string;
   credits: number;
   mfaEnabled?: boolean;

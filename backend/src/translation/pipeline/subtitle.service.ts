@@ -16,7 +16,12 @@ export async function translateSegments(
   for (const segment of segments) {
     // chargeCredit=false: the video job already charges a flat 10 credits on
     // COMPLETED; per-segment calls only reuse the translate() cache, never bill.
-    const translatedText = await translationService.translate(
+    // translate() now returns { translatedText, detectedLang } (Phase 3
+    // auto-detect). sourceLang here comes from STT (transcript.language),
+    // which uses "unknown" — never the literal "auto" — for its
+    // can't-detect case specifically so it never trips translate()'s
+    // strict auto-detect branch; detectedLang is discarded as a result.
+    const { translatedText } = await translationService.translate(
       userId,
       segment.text,
       sourceLang,

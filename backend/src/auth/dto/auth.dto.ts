@@ -28,3 +28,14 @@ export class ResetPasswordDto {
   otp: string;
   newPassword: string;
 }
+
+export class UpdateProfileDto {
+  name?: string;
+  phone?: string;
+  avatarUrl?: string;
+}
+
+export class ChangePasswordDto {
+  currentPassword: string;
+  newPassword: string;
+}

@@ -100,7 +100,7 @@ export default function BillingSection({ token, user, refreshUser, showToast }: 
     status === "PENDING" ? styles.badgePending : status === "CONFIRMED" ? styles.badgeCompleted : styles.badgeFailed;
 
   return (
-    <div className={styles.card} style={{ marginTop: "2rem", width: "100%" }}>
+    <div id="billing-section" className={styles.card} style={{ marginTop: "2rem", width: "100%" }}>
       <h2 style={{ fontSize: "1.25rem", fontWeight: "600", marginBottom: "0.5rem" }}>💳 Nạp Credits</h2>
       <p style={{ color: "var(--text-secondary)", fontSize: "0.875rem", marginBottom: "1.5rem" }}>
         Quét mã QR chuyển khoản ngân hàng (giữ đúng nội dung chuyển khoản) — credits được cộng sau khi admin xác nhận đã nhận tiền.

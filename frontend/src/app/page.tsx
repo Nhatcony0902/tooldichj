@@ -8,6 +8,7 @@ import AuthCard from "./components/AuthCard";
 import TextTranslationSection from "./components/TextTranslationSection";
 import VideoTranslationSection from "./components/VideoTranslationSection";
 import MfaSettingsSection from "./components/MfaSettingsSection";
+import BillingSection from "./components/BillingSection";
 import { useAuth } from "./hooks/useAuth";
 import { Voice } from "./types";
 
@@ -207,6 +208,14 @@ export default function Home() {
               previewingVoiceId={previewingVoiceId}
             />
           )}
+
+          {/* Nạp Credits */}
+          <BillingSection
+            token={token!}
+            user={user}
+            refreshUser={fetchUserMe}
+            showToast={showToast}
+          />
 
           {/* MFA Settings Card */}
           <MfaSettingsSection

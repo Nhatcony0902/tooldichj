@@ -38,3 +38,13 @@ export interface Voice {
   style: string;
   sampleUrl: string;
 }
+
+export interface CreditTopupRequest {
+  id: string;
+  amount: number;
+  credits: number;
+  orderCode: string;
+  status: "PENDING" | "CONFIRMED" | "REJECTED";
+  createdAt: string;
+  user?: { id: string; email: string; name: string };
+}

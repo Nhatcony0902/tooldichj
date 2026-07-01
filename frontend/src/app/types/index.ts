@@ -10,7 +10,7 @@ export interface TranslationHistory {
 export interface VideoJob {
   id: string;
   fileName: string;
-  status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED";
+  status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "CANCELLED";
   progress: number;
   stepDescription: string;
   targetLang: string;

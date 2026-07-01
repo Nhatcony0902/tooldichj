@@ -49,7 +49,7 @@ export default function TextTranslationSection({
   const [targetLang, setTargetLang] = useState("vi");
   const [isTranslating, setIsTranslating] = useState(false);
   const [history, setHistory] = useState<TranslationHistory[]>([]);
-  const [selectedVoiceId, setSelectedVoiceId] = useState("Kore");
+  const [selectedVoiceId, setSelectedVoiceId] = useState("vi-VN-HoaiMyNeural");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [detectedLang, setDetectedLang] = useState<string | null>(null);
 

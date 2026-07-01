@@ -39,7 +39,8 @@ export default function VideoTranslationSection({
   const [videoUrl, setVideoUrl] = useState("");
   const [targetLangVideo, setTargetLangVideo] = useState("vi");
   const [outputModeVideo, setOutputModeVideo] = useState("burn");
-  const [dubVoiceIdVideo, setDubVoiceIdVideo] = useState("Kore");
+  const [dubVoiceIdVideo, setDubVoiceIdVideo] = useState("vi-VN-HoaiMyNeural");
+  const [removeSourceSubsVideo, setRemoveSourceSubsVideo] = useState(false);
   const [jobs, setJobs] = useState<VideoJob[]>([]);
 
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
@@ -50,6 +51,7 @@ export default function VideoTranslationSection({
       const response = await fetch("http://localhost:3001/translation/video-jobs", {
         headers: { Authorization: `Bearer ${authToken}` },
       });
+      if (!response.ok) return;
       const data = await response.json();
       if (data.success) {
         setJobs(data.jobs);
@@ -117,6 +119,7 @@ export default function VideoTranslationSection({
       if (outputModeVideo === "dub" || outputModeVideo === "burn+dub") {
         formData.append("dubVoiceId", dubVoiceIdVideo);
       }
+      formData.append("removeSourceSubs", String(removeSourceSubsVideo));
 
       const response = await fetch("http://localhost:3001/translation/video-job", {
         method: "POST",
@@ -147,6 +150,45 @@ export default function VideoTranslationSection({
       }
     } catch {
       showToast("error", "Lỗi kết nối server khi tạo video job!");
+    }
+  };
+
+  const handleCancelJob = async (jobId: string) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`http://localhost:3001/translation/video-jobs/${jobId}/cancel`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        await fetchJobs(token);
+        showToast("success", "Đã huỷ job xử lý video.");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showToast("error", data.message || "Không thể huỷ job này.");
+      }
+    } catch {
+      showToast("error", "Lỗi kết nối khi huỷ job.");
+    }
+  };
+
+  const handleDeleteJob = async (jobId: string) => {
+    if (!token) return;
+    if (!confirm("Xoá job này? Thao tác không thể hoàn tác.")) return;
+    try {
+      const res = await fetch(`http://localhost:3001/translation/video-jobs/${jobId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setJobs((prev) => prev.filter((j) => j.id !== jobId));
+        showToast("success", "Đã xoá job.");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showToast("error", data.message || "Không thể xoá job này.");
+      }
+    } catch {
+      showToast("error", "Lỗi kết nối khi xoá job.");
     }
   };
 
@@ -253,8 +295,6 @@ export default function VideoTranslationSection({
               >
                 <option value="burn">Chèn sub vào Video</option>
                 <option value="srt">Chỉ xuất file .SRT</option>
-                <option value="dub">Lồng tiếng AI (TTS)</option>
-                <option value="burn+dub">Chèn sub + Lồng tiếng AI</option>
               </select>
             </div>
           </div>
@@ -271,6 +311,17 @@ export default function VideoTranslationSection({
               />
             </div>
           )}
+
+          <div className={styles.inputGroup}>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={removeSourceSubsVideo}
+                onChange={(e) => setRemoveSourceSubsVideo(e.target.checked)}
+              />
+              <span>Làm mờ phụ đề cứng có sẵn trong video</span>
+            </label>
+          </div>
 
           <button
             type="submit"
@@ -303,16 +354,24 @@ export default function VideoTranslationSection({
                   </span>
                   <span
                     className={`${styles.badge} ${
-                      job.status === "PENDING"
-                        ? styles.badgePending
-                        : job.status === "PROCESSING"
-                        ? styles.badgeProcessing
-                        : job.status === "COMPLETED"
-                        ? styles.badgeCompleted
-                        : styles.badgeFailed
+                      {
+                        PENDING: styles.badgePending,
+                        PROCESSING: styles.badgeProcessing,
+                        COMPLETED: styles.badgeCompleted,
+                        FAILED: styles.badgeFailed,
+                        CANCELLED: styles.badgeCancelled,
+                      }[job.status] ?? styles.badgeFailed
                     }`}
                   >
-                    {job.status}
+                    {
+                      {
+                        PENDING: "Đang chờ",
+                        PROCESSING: "Đang xử lý",
+                        COMPLETED: "Hoàn tất",
+                        FAILED: "Thất bại",
+                        CANCELLED: "Đã huỷ",
+                      }[job.status] ?? job.status
+                    }
                   </span>
                 </div>
 
@@ -332,7 +391,7 @@ export default function VideoTranslationSection({
                 <div className={styles.jobDetails}>
                   <span>Mục tiêu: {job.targetLang.toUpperCase()}</span>
                   {job.status === "COMPLETED" ? (
-                    <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
                       {job.subtitlesUrl && (
                         <a
                           href="#"
@@ -369,9 +428,33 @@ export default function VideoTranslationSection({
                           🔊 Tải Audio lồng tiếng
                         </a>
                       )}
+                      <button
+                        className={styles.jobDeleteBtn}
+                        onClick={() => handleDeleteJob(job.id)}
+                      >
+                        Xoá
+                      </button>
+                    </div>
+                  ) : job.status === "PENDING" || job.status === "PROCESSING" ? (
+                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                      <span>Tiến trình: {job.progress}%</span>
+                      <button
+                        className={styles.jobCancelBtn}
+                        onClick={() => handleCancelJob(job.id)}
+                      >
+                        Huỷ
+                      </button>
                     </div>
                   ) : (
-                    <span>Tiến trình: {job.progress}%</span>
+                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                      <span>{job.status === "CANCELLED" ? "Đã huỷ" : "Thất bại"}</span>
+                      <button
+                        className={styles.jobDeleteBtn}
+                        onClick={() => handleDeleteJob(job.id)}
+                      >
+                        Xoá
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>

@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
-import type { GoogleGenAI } from '@google/genai';
-import { getAudioDuration } from './audio-extractor';
+import * as fs from 'fs/promises';
+import { withRetry } from './rate-limit.util';
 
 export interface TranscriptSegment {
   start: number;
@@ -15,98 +15,90 @@ export interface Transcript {
 
 const logger = new Logger('SttService');
 
+const GROQ_STT_MODEL = 'whisper-large-v3-turbo';
+// Groq file size limit is 25 MB; leave 1 MB safety margin.
+const MAX_AUDIO_BYTES = 24 * 1024 * 1024;
+
+interface GroqSegment {
+  start: number;
+  end: number;
+  text: string;
+}
+
+interface GroqVerboseResponse {
+  language: string;
+  text: string;
+  segments: GroqSegment[];
+}
+
 export async function transcribeAudio(
-  ai: GoogleGenAI | null,
+  _ai: unknown,
   audioBuffer: Buffer,
   audioPath: string,
 ): Promise<Transcript> {
-  if (!ai) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    logger.warn('GROQ_API_KEY not set — returning mock transcript');
     return mockTranscript();
   }
 
-  const base64Audio = audioBuffer.toString('base64');
-
-  try {
-    const raw = await callGemini(
-      ai,
-      base64Audio,
-      `Transcribe this audio. Detect the spoken language (ISO 639-1 code, e.g. "en", "vi", "ja").
-Return ONLY a JSON object, no markdown fences, in this exact shape:
-{"language":"<iso-code>","segments":[{"start":<seconds-number>,"end":<seconds-number>,"text":"<transcribed text>"}]}
-Split into segments of roughly 3-8 seconds aligned to natural speech pauses.`,
+  if (audioBuffer.length > MAX_AUDIO_BYTES) {
+    const sizeMb = (audioBuffer.length / 1024 / 1024).toFixed(1);
+    throw new Error(
+      `Audio file too large for STT (${sizeMb} MB > 24 MB). Try a shorter video.`,
     );
-
-    const parsed = JSON.parse(stripMarkdownFence(raw)) as Transcript;
-    if (!Array.isArray(parsed.segments) || parsed.segments.length === 0) {
-      throw new Error('Empty segments in STT response');
-    }
-    return parsed;
-  } catch (err) {
-    logger.error(
-      'Gemini STT failed or returned unparseable JSON, falling back to whole-audio heuristic transcript',
-      err instanceof Error ? err.message : err,
-    );
-    return fallbackWholeAudioTranscript(ai, base64Audio, audioPath);
   }
+
+  return withRetry(() => callGroqWhisper(apiKey, audioPath));
 }
 
-async function callGemini(
-  ai: GoogleGenAI,
-  base64Audio: string,
-  prompt: string,
-): Promise<string> {
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { inlineData: { mimeType: 'audio/mp3', data: base64Audio } },
-          { text: prompt },
-        ],
-      },
-    ],
-  });
-  return response.text?.trim() || '';
-}
-
-function stripMarkdownFence(text: string): string {
-  const match = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  return match ? match[1] : text;
-}
-
-async function fallbackWholeAudioTranscript(
-  ai: GoogleGenAI,
-  base64Audio: string,
+async function callGroqWhisper(
+  apiKey: string,
   audioPath: string,
 ): Promise<Transcript> {
-  const duration = await getAudioDuration(audioPath).catch(() => 0);
-  try {
-    const text = await callGemini(
-      ai,
-      base64Audio,
-      'Transcribe this audio verbatim. Reply with ONLY the transcript text, no JSON, no notes.',
-    );
-    return {
-      // Source language is unknown in this fallback path (no per-segment
-      // detection). Deliberately NOT "auto" — that string is reserved by
-      // TranslationService as the user-facing auto-detect trigger, and
-      // forwarding it here would make every per-segment translate() call
-      // run the strict (throw-on-failure) detect+translate path instead of
-      // the resilient mock-fallback one video jobs rely on.
-      language: 'unknown',
-      segments: [{ start: 0, end: duration || 1, text }],
-    };
-  } catch (err) {
-    logger.error(
-      'Fallback whole-audio STT also failed',
-      err instanceof Error ? err.message : err,
-    );
-    throw new Error(
-      'Speech-to-text failed: ' +
-        (err instanceof Error ? err.message : 'unknown error'),
-    );
+  const fileBuffer = await fs.readFile(audioPath);
+
+  const formData = new FormData();
+  formData.append(
+    'file',
+    new Blob([fileBuffer], { type: 'audio/mpeg' }),
+    'audio.mp3',
+  );
+  formData.append('model', GROQ_STT_MODEL);
+  formData.append('response_format', 'verbose_json');
+  formData.append('timestamp_granularities[]', 'segment');
+
+  const response = await fetch(
+    'https://api.groq.com/openai/v1/audio/transcriptions',
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: formData,
+    },
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Groq STT ${response.status}: ${errorText}`);
   }
+
+  const data = (await response.json()) as GroqVerboseResponse;
+
+  if (!data.segments || data.segments.length === 0) {
+    return {
+      language: data.language || 'unknown',
+      segments: [{ start: 0, end: 0, text: data.text || '' }],
+    };
+  }
+
+  return {
+    language: data.language || 'unknown',
+    segments: data.segments.map((s) => ({
+      start: s.start,
+      end: s.end,
+      text: s.text.trim(),
+    })),
+  };
 }
 
 function mockTranscript(): Promise<Transcript> {
@@ -116,7 +108,7 @@ function mockTranscript(): Promise<Transcript> {
       {
         start: 0,
         end: 5,
-        text: '[Mock transcript - GEMINI_API_KEY not configured]',
+        text: '[Mock transcript — GROQ_API_KEY not configured]',
       },
     ],
   });

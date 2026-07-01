@@ -75,8 +75,9 @@ model VideoJob {
   stepDescription String   @default("Đang chờ...")
   targetLang      String   @default("vi")
   outputMode      String   @default("burn") // srt | burn | dub | burn+dub
-  dubVoiceId      String?
-  errorMessage    String?
+  dubVoiceId       String?
+  removeSourceSubs Boolean  @default(false)
+  errorMessage     String?
   subtitlesUrl    String?
   outputVideoUrl  String?
   outputAudioUrl  String?

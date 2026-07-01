@@ -8,6 +8,7 @@ export function extractAudio(
     ffmpeg(inputPath)
       .noVideo()
       .audioCodec('libmp3lame')
+      .audioBitrate(32)
       .audioChannels(1)
       .audioFrequency(16000)
       .on('end', () => resolve())

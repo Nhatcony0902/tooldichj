@@ -1,29 +1,26 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import ffmpeg from 'fluent-ffmpeg';
+import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { PrismaService } from '../prisma.service';
-import { GeminiClientService } from '../gemini/gemini-client.service';
 import { CreditService } from '../credit/credit.service';
 import { InsufficientCreditsError } from '../credit/insufficient-credits.error';
 import {
   STORAGE_PROVIDER,
   type IStorageProvider,
 } from '../storage/storage.interface';
-import { TTS_MODEL, isValidVoiceId } from './voices.config';
+import { VOICE_CATALOG, isValidVoiceId } from './voices.config';
 
 export interface SynthesizeResult {
   audioBuffer: Buffer;
   cached: boolean;
 }
 
-interface TtsAudio {
-  buffer: Buffer;
-  isMock: boolean;
-}
+// Expose the catalog so the controller can serve it without importing voices.config directly.
+export { VOICE_CATALOG };
 
-const SAMPLE_PHRASE = 'Hello! This is a preview of my voice.';
+const SAMPLE_PHRASE = 'Xin chào! Đây là giọng đọc thử nghiệm.';
 
 @Injectable()
 export class TtsService {
@@ -31,7 +28,6 @@ export class TtsService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly geminiClient: GeminiClientService,
     private readonly creditService: CreditService,
     @Inject(STORAGE_PROVIDER) private readonly storage: IStorageProvider,
   ) {}
@@ -49,17 +45,17 @@ export class TtsService {
       throw new Error(`Unknown voiceId "${voiceId}"`);
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { credits: true },
-    });
-    if (!user) {
-      throw new Error('User not found');
-    }
-    if (chargeCredit && user.credits <= 0) {
-      throw new InsufficientCreditsError(
-        'Tài khoản đã hết Credits. Vui lòng nạp thêm để tiếp tục!',
-      );
+    if (chargeCredit) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { credits: true },
+      });
+      if (!user) throw new Error('User not found');
+      if (user.credits <= 0) {
+        throw new InsufficientCreditsError(
+          'Tài khoản đã hết Credits. Vui lòng nạp thêm để tiếp tục!',
+        );
+      }
     }
 
     const result = await this.synthesizeOrServeFromCache(text, voiceId);
@@ -76,28 +72,32 @@ export class TtsService {
     return this.synthesizeOrServeFromCache(SAMPLE_PHRASE, voiceId);
   }
 
+  private hashText(text: string): string {
+    // Simple djb2 hash — good enough for cache keys (same algo as GeminiClientService).
+    let h = 5381;
+    for (let i = 0; i < text.length; i++) {
+      h = ((h << 5) + h) ^ text.charCodeAt(i);
+      h = h >>> 0;
+    }
+    return h.toString(16);
+  }
+
   private async synthesizeOrServeFromCache(
     text: string,
     voiceId: string,
   ): Promise<SynthesizeResult> {
-    const textHash = this.geminiClient.getHash(text);
+    const textHash = this.hashText(text);
 
     const cached = await this.prisma.ttsCache.findUnique({
       where: { textHash_voiceId: { textHash, voiceId } },
     });
-    if (cached && cached.audioStorageKey) {
-      this.logger.log(`TTS cache hit (text+voice hash: ${textHash})`);
+    if (cached?.audioStorageKey) {
+      this.logger.log(`TTS cache hit (hash: ${textHash}, voice: ${voiceId})`);
       const audioBuffer = await this.storage.read(cached.audioStorageKey);
       return { audioBuffer, cached: true };
     }
 
-    // Claim the (textHash, voiceId) slot via the unique constraint itself —
-    // only one concurrent caller can insert this empty-key placeholder row.
-    // The loser falls through to waitForPendingEntry instead of also calling
-    // Gemini, so two simultaneous requests for the same uncached text+voice
-    // never double-bill the Gemini API (each still pays its own 1 credit at
-    // the call site, same as two sequential calls would — that's intentional,
-    // not a bug).
+    // Claim the slot to prevent concurrent callers from double-synthesizing.
     let claimed = false;
     try {
       await this.prisma.ttsCache.create({
@@ -113,32 +113,41 @@ export class TtsService {
     }
 
     try {
-      const { buffer, isMock } = await this.callGeminiTts(text, voiceId);
-
-      if (isMock) {
-        // Never persist a mock placeholder as if it were real audio — once a
-        // working GEMINI_API_KEY is in place, this exact (text, voiceId)
-        // pair must still hit the live API rather than serve a stale,
-        // unplayable cache entry forever. Release the claim so it doesn't
-        // permanently block real generation for this pair.
-        this.logger.warn(
-          `Skipping TtsCache persistence for mock audio (text+voice hash: ${textHash})`,
-        );
-        await this.releaseClaim(textHash, voiceId);
-        return { audioBuffer: buffer, cached: false };
-      }
-
-      const audioStorageKey = `tts/${textHash}-${voiceId}.mp3`;
-      await this.storage.save(buffer, audioStorageKey);
+      const audioBuffer = await this.callEdgeTts(text, voiceId);
+      const audioStorageKey = `tts/edge-${textHash}-${voiceId}.mp3`;
+      await this.storage.save(audioBuffer, audioStorageKey);
       await this.prisma.ttsCache.update({
         where: { textHash_voiceId: { textHash, voiceId } },
         data: { audioStorageKey },
       });
-      return { audioBuffer: buffer, cached: false };
+      return { audioBuffer, cached: false };
     } catch (err) {
       await this.releaseClaim(textHash, voiceId);
       throw err;
     }
+  }
+
+  private async callEdgeTts(text: string, voiceId: string): Promise<Buffer> {
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata(voiceId, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const { audioStream } = tts.toStream(text);
+      audioStream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      audioStream.on('end', resolve);
+      audioStream.on('error', (err: Error) => reject(err));
+    });
+    const result = Buffer.concat(chunks);
+    if (result.length === 0) {
+      // msedge-tts WebSocket can drop silently (no error event) and resolve
+      // with 0 bytes. Throw so withRetry can retry and callers don't write an
+      // invalid MP3 that crashes ffprobe downstream.
+      throw new Error('Edge TTS returned no audio data');
+    }
+    this.logger.log(
+      `Edge TTS synthesized ${result.length} bytes for voice "${voiceId}"`,
+    );
+    return result;
   }
 
   private async releaseClaim(textHash: string, voiceId: string): Promise<void> {
@@ -159,10 +168,8 @@ export class TtsService {
         where: { textHash_voiceId: { textHash, voiceId } },
       });
       if (!row) {
-        // The winning request failed or fell back to mock and released its
-        // claim — nothing to wait for anymore.
         throw new Error(
-          'Concurrent text-to-speech generation did not complete; please try again',
+          'Concurrent TTS generation did not complete; please try again',
         );
       }
       if (row.audioStorageKey) {
@@ -170,61 +177,23 @@ export class TtsService {
         return { audioBuffer, cached: true };
       }
     }
-    throw new Error(
-      'Timed out waiting for a concurrent text-to-speech request to finish',
-    );
+    throw new Error('Timed out waiting for a concurrent TTS request to finish');
   }
 
-  private async callGeminiTts(
-    text: string,
-    voiceId: string,
-  ): Promise<TtsAudio> {
-    const ai = this.geminiClient.getAi();
-    if (!ai) {
-      this.logger.warn(
-        'GEMINI_API_KEY is not defined. Using mock TTS fallback.',
-      );
-      return { buffer: await this.mockAudio(), isMock: true };
-    }
+  /** Fallback: return a short silent MP3 when Edge TTS is unavailable. */
+  async makeSilence(durationSec: number): Promise<Buffer> {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tts-silence-'));
     try {
-      const response = await ai.models.generateContent({
-        model: TTS_MODEL,
-        contents: [{ parts: [{ text }] }],
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceId } },
-          },
-        },
-      });
-      const base64Audio =
-        response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (!base64Audio) {
-        throw new Error('Gemini TTS returned no audio data');
-      }
-      // Gemini returns raw PCM (24kHz, mono, 16-bit) with no container/header.
-      const pcmBuffer = Buffer.from(base64Audio, 'base64');
-      const mp3Buffer = await this.transcodeToMp3(pcmBuffer);
-      return { buffer: mp3Buffer, isMock: false };
-    } catch (err) {
-      this.logger.error(
-        'Gemini TTS call failed, falling back to mock audio',
-        err instanceof Error ? err.message : err,
-      );
-      return { buffer: await this.mockAudio(), isMock: true };
-    }
-  }
-
-  private async transcodeToMp3(pcmBuffer: Buffer): Promise<Buffer> {
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tts-'));
-    try {
-      const rawPath = path.join(tmpDir, 'raw.pcm');
-      const mp3Path = path.join(tmpDir, 'out.mp3');
-      await fs.writeFile(rawPath, pcmBuffer);
+      const { default: ffmpeg } = await import('fluent-ffmpeg');
+      const sampleRate = 24000;
+      const sampleCount = Math.round(durationSec * sampleRate);
+      const rawPath = path.join(tmpDir, 'silent.pcm');
+      const mp3Path = path.join(tmpDir, 'silent.mp3');
+      await fs.writeFile(rawPath, Buffer.alloc(sampleCount * 2));
       await new Promise<void>((resolve, reject) => {
         ffmpeg(rawPath)
           .inputFormat('s16le')
-          .inputOptions(['-ar', '24000', '-ac', '1'])
+          .inputOptions(['-ar', `${sampleRate}`, '-ac', '1'])
           .audioCodec('libmp3lame')
           .on('end', () => resolve())
           .on('error', (err: Error) => reject(err))
@@ -232,21 +201,7 @@ export class TtsService {
       });
       return await fs.readFile(mp3Path);
     } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true }).catch((err) => {
-        this.logger.warn(
-          `Failed to clean up temp dir ${tmpDir}`,
-          err instanceof Error ? err.message : err,
-        );
-      });
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
     }
-  }
-
-  private async mockAudio(): Promise<Buffer> {
-    // A real, valid (silent) MP3 — wired end-to-end without a GEMINI_API_KEY
-    // the same way TranslationService's mock fallback stands in for a real
-    // translation, but unlike plain placeholder text, this actually plays
-    // in an <audio> element instead of erroring on malformed media.
-    const silentPcm = Buffer.alloc(Math.floor(24000 * 0.3) * 2);
-    return this.transcodeToMp3(silentPcm);
   }
 }

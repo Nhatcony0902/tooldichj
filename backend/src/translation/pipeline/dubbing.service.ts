@@ -5,6 +5,7 @@ import * as path from 'path';
 import { TtsService } from '../../tts/tts.service';
 import { TranslatedSegment } from './subtitle.service';
 import { getAudioDuration } from './audio-extractor';
+import { withRetry } from './rate-limit.util';
 
 const SILENCE_THRESHOLD_SEC = 0.05;
 // Single-instance ffmpeg `atempo` is reliable up to 2.0x; beyond that the
@@ -69,12 +70,23 @@ export async function buildDubbingTrack(
     // chargeCredit=false: dubbing TTS reuses the flat 10-credit video-job
     // charge, consistent with the Phase 2 decision that per-segment Gemini
     // calls inside the video pipeline never bill independently.
-    const { audioBuffer } = await ttsService.synthesize(
-      userId,
-      segment.translatedText,
-      voiceId,
-      false,
-    );
+    // withRetry handles rate-limit errors; per-segment try/catch ensures a
+    // single failed segment fills with silence instead of aborting the whole track.
+    let audioBuffer: Buffer;
+    try {
+      const result = await withRetry(() =>
+        ttsService.synthesize(userId, segment.translatedText, voiceId, false),
+      );
+      audioBuffer = result.audioBuffer;
+    } catch (segErr) {
+      logger.warn(
+        `Segment ${i} TTS failed, filling with silence: ${segErr instanceof Error ? segErr.message : String(segErr)}`,
+      );
+      await renderSilence(clipPath, targetDuration);
+      pieces.push(clipPath);
+      cursor = segment.end;
+      continue;
+    }
     const rawClipPath = path.join(tmpDir, `clip_${i}_raw.mp3`);
     await fs.writeFile(rawClipPath, audioBuffer);
     const actualDuration = await getAudioDuration(rawClipPath);

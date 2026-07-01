@@ -1,46 +1,94 @@
+import { Logger } from '@nestjs/common';
 import { TranslationService } from '../translation.service';
 import { TranscriptSegment } from './stt.service';
+import { withRetry } from './rate-limit.util';
+import { translateBatchViaGroq } from './groq-translate.service';
+
+const logger = new Logger('subtitle.service');
 
 export interface TranslatedSegment extends TranscriptSegment {
   translatedText: string;
 }
 
+const MAX_LINE_CHARS = 42;
+// A translated subtitle segment should display at most ~12 words at a time.
+// When Gemini STT returns a single large segment (fallback or short audio that
+// Gemini groups as one chunk), splitting it here keeps subtitles readable
+// instead of cramming a full transcript into two lines.
+const MAX_WORDS_PER_SUBTITLE = 12;
+
+function splitLongSegment(segment: TranslatedSegment): TranslatedSegment[] {
+  const words = segment.translatedText.split(/\s+/).filter(Boolean);
+  if (words.length <= MAX_WORDS_PER_SUBTITLE) return [segment];
+
+  const duration = segment.end - segment.start;
+  const chunks: string[] = [];
+  for (let i = 0; i < words.length; i += MAX_WORDS_PER_SUBTITLE) {
+    chunks.push(words.slice(i, i + MAX_WORDS_PER_SUBTITLE).join(' '));
+  }
+  const segDuration = duration / chunks.length;
+  return chunks.map((text, idx) => ({
+    ...segment,
+    start: segment.start + idx * segDuration,
+    end: segment.start + (idx + 1) * segDuration,
+    translatedText: text,
+  }));
+}
+
+function wrapToTwoLines(text: string): string {
+  if (text.length <= MAX_LINE_CHARS) return text;
+  const words = text.split(/\s+/);
+  const lines: string[] = ['', ''];
+  let li = 0;
+  for (const w of words) {
+    const candidate = lines[li] ? `${lines[li]} ${w}` : w;
+    if (candidate.length > MAX_LINE_CHARS && li === 0) {
+      li = 1;
+      lines[1] = w;
+    } else {
+      lines[li] = candidate;
+    }
+  }
+  return lines.filter(Boolean).join('\n');
+}
+
 export async function translateSegments(
   translationService: TranslationService,
-  userId: string,
+  _userId: string,
   segments: TranscriptSegment[],
   sourceLang: string,
   targetLang: string,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<TranslatedSegment[]> {
-  const translated: TranslatedSegment[] = [];
-  for (const segment of segments) {
-    // chargeCredit=false: the video job already charges a flat 10 credits on
-    // COMPLETED; per-segment calls only reuse the translate() cache, never bill.
-    // translate() now returns { translatedText, detectedLang } (Phase 3
-    // auto-detect). sourceLang here comes from STT (transcript.language),
-    // which uses "unknown" — never the literal "auto" — for its
-    // can't-detect case specifically so it never trips translate()'s
-    // strict auto-detect branch; detectedLang is discarded as a result.
-    const { translatedText } = await translationService.translate(
-      userId,
-      segment.text,
-      sourceLang,
-      targetLang,
-      false,
+  const texts = segments.map((s) => s.text);
+  let translatedTexts: string[];
+  try {
+    // Groq LLaMA (6,000 RPM / 14,400 RPD) handles video quota better than
+    // Gemini (15 RPM / 1,500 RPD). Falls back to Gemini if Groq is unavailable.
+    translatedTexts = await withRetry<string[]>(() =>
+      translateBatchViaGroq(texts, sourceLang, targetLang),
     );
-    translated.push({
-      ...segment,
-      translatedText: translatedText || segment.text,
-    });
+  } catch (groqErr) {
+    logger.warn(
+      `Groq subtitle translation failed, falling back to Gemini: ${groqErr instanceof Error ? groqErr.message : String(groqErr)}`,
+    );
+    translatedTexts = await withRetry<string[]>(() =>
+      translationService.translateBatch(texts, sourceLang, targetLang),
+    );
   }
-  return translated;
+  onProgress?.(segments.length, segments.length);
+  return segments.map((segment, i) => ({
+    ...segment,
+    translatedText: translatedTexts[i] || segment.text,
+  }));
 }
 
 export function buildSrt(segments: TranslatedSegment[]): string {
-  return segments
+  const expanded = segments.flatMap((s) => splitLongSegment(s));
+  return expanded
     .map(
       (segment, index) =>
-        `${index + 1}\n${toSrtTimestamp(segment.start)} --> ${toSrtTimestamp(segment.end)}\n${segment.translatedText}\n`,
+        `${index + 1}\n${toSrtTimestamp(segment.start)} --> ${toSrtTimestamp(segment.end)}\n${wrapToTwoLines(segment.translatedText)}\n`,
     )
     .join('\n');
 }

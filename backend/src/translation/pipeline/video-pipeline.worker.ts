@@ -17,9 +17,9 @@ import { DEFAULT_VOICE_ID } from '../../tts/voices.config';
 import { extractAudio } from './audio-extractor';
 import { transcribeAudio } from './stt.service';
 import { translateSegments, buildSrt } from './subtitle.service';
-import { burnInSubtitles } from './burn-in.service';
+import { burnInSubtitles, blurSubtitleArea } from './burn-in.service';
 import { buildDubbingTrack } from './dubbing.service';
-import { muxVideoWithAudio } from './mux.service';
+import { muxVideoWithAudio, muxVideoWithMixedAudio } from './mux.service';
 import {
   isValidOutputMode,
   outputModeIncludesBurn,
@@ -81,6 +81,7 @@ export class VideoPipelineWorker extends WorkerHost {
       );
       await fs.writeFile(inputPath, inputBuffer);
 
+      await this.assertNotCancelled(jobId);
       await this.updateJob(jobId, {
         progress: 15,
         stepDescription: 'Đang trích xuất âm thanh...',
@@ -88,16 +89,13 @@ export class VideoPipelineWorker extends WorkerHost {
       const audioPath = path.join(tmpDir, 'audio.mp3');
       await extractAudio(inputPath, audioPath);
 
+      await this.assertNotCancelled(jobId);
       await this.updateJob(jobId, {
         progress: 40,
         stepDescription: 'Đang nhận dạng giọng nói...',
       });
       const audioBuffer = await fs.readFile(audioPath);
-      const transcript = await transcribeAudio(
-        this.translationService.getAi(),
-        audioBuffer,
-        audioPath,
-      );
+      const transcript = await transcribeAudio(null, audioBuffer, audioPath);
       await this.prisma.videoJob.update({
         where: { id: jobId },
         // Prisma's Json input type requires an index signature; Transcript is a
@@ -109,6 +107,7 @@ export class VideoPipelineWorker extends WorkerHost {
         },
       });
 
+      await this.assertNotCancelled(jobId);
       await this.updateJob(jobId, {
         progress: 70,
         stepDescription: 'Đang dịch phụ đề bằng Gemini...',
@@ -119,6 +118,13 @@ export class VideoPipelineWorker extends WorkerHost {
         transcript.segments,
         transcript.language,
         videoJob.targetLang,
+        async (done, total) => {
+          const segProgress = 70 + Math.round((done / total) * 10);
+          await this.updateJob(jobId, {
+            progress: segProgress,
+            stepDescription: `Đang dịch phụ đề... (${done}/${total})`,
+          });
+        },
       );
       const srtContent = buildSrt(translatedSegments);
       const srtKey = `outputs/${jobId}/subtitles.srt`;
@@ -140,6 +146,16 @@ export class VideoPipelineWorker extends WorkerHost {
 
       let videoStreamSourcePath = inputPath;
       if (outputModeIncludesBurn(outputMode)) {
+        let burnSource = inputPath;
+        if (videoJob.removeSourceSubs) {
+          await this.updateJob(jobId, {
+            progress: 78,
+            stepDescription: 'Đang làm mờ phụ đề gốc...',
+          });
+          const blurredPath = path.join(tmpDir, 'blurred.mp4');
+          await blurSubtitleArea(inputPath, blurredPath);
+          burnSource = blurredPath;
+        }
         await this.updateJob(jobId, {
           progress: 80,
           stepDescription: 'Đang chèn cứng phụ đề vào video...',
@@ -147,36 +163,57 @@ export class VideoPipelineWorker extends WorkerHost {
         const srtPath = path.join(tmpDir, 'subtitles.srt');
         await fs.writeFile(srtPath, srtContent, 'utf-8');
         const burnedVideoPath = path.join(tmpDir, 'burned.mp4');
-        await burnInSubtitles(inputPath, srtPath, burnedVideoPath);
+        await burnInSubtitles(burnSource, srtPath, burnedVideoPath);
         videoStreamSourcePath = burnedVideoPath;
       }
 
+      let dubFailedReason: string | null = null;
       if (outputModeIncludesDub(outputMode)) {
         await this.updateJob(jobId, {
           progress: 90,
           stepDescription: 'Đang tạo lồng tiếng AI (TTS)...',
         });
-        const voiceId = videoJob.dubVoiceId || DEFAULT_VOICE_ID;
-        const { audioPath: dubAudioPath, driftSeconds } =
-          await buildDubbingTrack(
-            this.ttsService,
-            videoJob.userId,
-            translatedSegments,
-            voiceId,
-            tmpDir,
-          );
-        driftWarning = driftSeconds > 1;
-        const dubAudioBuffer = await fs.readFile(dubAudioPath);
-        outputAudioKey = `outputs/${jobId}/dub-audio.mp3`;
-        await this.storage.save(dubAudioBuffer, outputAudioKey);
+        try {
+          const voiceId = videoJob.dubVoiceId || DEFAULT_VOICE_ID;
+          const { audioPath: dubAudioPath, driftSeconds } =
+            await buildDubbingTrack(
+              this.ttsService,
+              videoJob.userId,
+              translatedSegments,
+              voiceId,
+              tmpDir,
+            );
+          driftWarning = driftSeconds > 1;
+          const dubAudioBuffer = await fs.readFile(dubAudioPath);
+          outputAudioKey = `outputs/${jobId}/dub-audio.mp3`;
+          await this.storage.save(dubAudioBuffer, outputAudioKey);
 
-        const dubbedVideoPath = path.join(tmpDir, 'dubbed.mp4');
-        await muxVideoWithAudio(
-          videoStreamSourcePath,
-          dubAudioPath,
-          dubbedVideoPath,
-        );
-        videoStreamSourcePath = dubbedVideoPath;
+          const dubbedVideoPath = path.join(tmpDir, 'dubbed.mp4');
+          try {
+            await muxVideoWithMixedAudio(
+              videoStreamSourcePath,
+              dubAudioPath,
+              dubbedVideoPath,
+            );
+          } catch {
+            // Fallback: video may have no audio stream (e.g. screen recording).
+            // Replace audio entirely instead of mixing.
+            await muxVideoWithAudio(
+              videoStreamSourcePath,
+              dubAudioPath,
+              dubbedVideoPath,
+            );
+          }
+          videoStreamSourcePath = dubbedVideoPath;
+        } catch (dubErr) {
+          // Graceful degradation: TTS quota exhausted or model error.
+          // Still deliver the burn-only video rather than failing the whole job.
+          dubFailedReason =
+            dubErr instanceof Error ? dubErr.message : String(dubErr);
+          this.logger.warn(
+            `VideoJob ${jobId} dubbing failed (will deliver burn-only output): ${dubFailedReason}`,
+          );
+        }
       }
 
       if (outputModeProducesVideo(outputMode)) {
@@ -185,9 +222,19 @@ export class VideoPipelineWorker extends WorkerHost {
         await this.storage.save(outputVideoBuffer, outputVideoKey);
       }
 
-      const completionMessage = driftWarning
-        ? 'Hoàn tất! Lưu ý: lồng tiếng có thể trôi nhịp nhẹ ở một số đoạn nói quá dài.'
-        : 'Hoàn tất! Phụ đề đã sẵn sàng tải xuống.';
+      let completionMessage: string;
+      if (dubFailedReason) {
+        const isQuota =
+          /quota|429|RESOURCE_EXHAUSTED/i.test(dubFailedReason);
+        completionMessage = isQuota
+          ? 'Hoàn tất (chỉ phụ đề)! Lồng tiếng thất bại: API Gemini hết quota hôm nay. Video phụ đề vẫn sẵn sàng tải xuống.'
+          : 'Hoàn tất (chỉ phụ đề)! Lồng tiếng thất bại do lỗi TTS. Video phụ đề vẫn sẵn sàng tải xuống.';
+      } else if (driftWarning) {
+        completionMessage =
+          'Hoàn tất! Lưu ý: lồng tiếng có thể trôi nhịp nhẹ ở một số đoạn nói quá dài.';
+      } else {
+        completionMessage = 'Hoàn tất! Phụ đề đã sẵn sàng tải xuống.';
+      }
 
       await this.prisma.$transaction(async (tx) => {
         // Atomic guard against double-processing (concurrent worker retry,
@@ -195,7 +242,7 @@ export class VideoPipelineWorker extends WorkerHost {
         // away from COMPLETED deducts credits. A second concurrent run
         // matches 0 rows and skips the charge entirely.
         const result = await tx.videoJob.updateMany({
-          where: { id: jobId, status: { not: 'COMPLETED' } },
+          where: { id: jobId, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
           data: {
             status: 'COMPLETED',
             progress: 100,
@@ -243,22 +290,60 @@ export class VideoPipelineWorker extends WorkerHost {
       return;
     }
     this.logger.error(
-      `VideoJob ${job.data.jobId} failed permanently after ${attemptsMax} attempts: ${error.message}`,
+      `VideoJob ${job.data.jobId} failed permanently after ${attemptsMax} attempts`,
+      error.stack ?? error.message,
     );
+    if (error.message === 'JOB_CANCELLED') return;
+    const friendlyMessage = this.buildFriendlyErrorMessage(error);
     await this.prisma.videoJob
-      .update({
-        where: { id: job.data.jobId },
-        data: {
-          status: 'FAILED',
-          // The raw error (logged above) can contain absolute filesystem
-          // paths; never surface that to the end user via the API response.
-          errorMessage:
-            'Xử lý video thất bại. Vui lòng thử lại hoặc liên hệ hỗ trợ.',
-        },
+      .updateMany({
+        where: { id: job.data.jobId, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+        data: { status: 'FAILED', errorMessage: friendlyMessage },
       })
       .catch((err: unknown) =>
         this.logger.error('Failed to persist FAILED status', err),
       );
+  }
+
+  private async assertNotCancelled(jobId: string): Promise<void> {
+    const job = await this.prisma.videoJob.findUnique({
+      where: { id: jobId },
+      select: { status: true },
+    });
+    if (job?.status === 'CANCELLED') {
+      throw new Error('JOB_CANCELLED');
+    }
+  }
+
+  private buildFriendlyErrorMessage(error: Error): string {
+    const msg = error.message;
+    // Never surface absolute filesystem paths to the end user.
+    if (/daily quota exhausted|billing details|check your plan|exceeded your current quota/i.test(msg)) {
+      return 'Đã hết quota Gemini API hôm nay. Vui lòng thử lại vào ngày mai hoặc nâng cấp gói API.';
+    }
+    if (/rate limit|quota|429|RESOURCE_EXHAUSTED/i.test(msg)) {
+      return 'Lỗi giới hạn lượt gọi API (rate limit). Vui lòng thử lại sau vài phút.';
+    }
+    if (/audio file too large/i.test(msg)) {
+      return 'Video quá dài — file âm thanh vượt giới hạn 14 MB của Gemini API. Vui lòng thử video ngắn hơn.';
+    }
+    if (/GEMINI_API_KEY/i.test(msg)) {
+      return 'Lỗi cấu hình: GEMINI_API_KEY chưa được thiết lập trong backend. Vui lòng liên hệ quản trị viên.';
+    }
+    if (/unknown voiceId|invalid voice|voice.*not found/i.test(msg)) {
+      return 'Lỗi lồng tiếng: giọng đọc không hợp lệ. Vui lòng chọn giọng khác và thử lại.';
+    }
+    if (/no audio data|returned no audio/i.test(msg)) {
+      return 'Lỗi tạo lồng tiếng: TTS không trả về dữ liệu âm thanh. Vui lòng thử lại.';
+    }
+    if (/speech.to.text failed|stt/i.test(msg)) {
+      const cause = msg.replace(/^.*speech.to.text failed:\s*/i, '').slice(0, 120);
+      return `Lỗi nhận dạng giọng nói (STT): ${cause}`;
+    }
+    if (/gemini.*định dạng không hợp lệ|unparseable/i.test(msg)) {
+      return 'Gemini trả về kết quả không hợp lệ. Vui lòng thử lại sau vài giây.';
+    }
+    return 'Xử lý video thất bại. Vui lòng thử lại hoặc liên hệ hỗ trợ.';
   }
 
   private async updateJob(

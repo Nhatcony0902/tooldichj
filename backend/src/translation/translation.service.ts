@@ -1,9 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { CreditService } from '../credit/credit.service';
 import { GeminiClientService } from '../gemini/gemini-client.service';
 import { GoogleGenAI } from '@google/genai';
 import { InsufficientCreditsError } from '../credit/insufficient-credits.error';
+import { isRateLimitError } from './pipeline/rate-limit.util';
 
 interface CreateVideoJobParams {
   fileName: string;
@@ -11,6 +12,7 @@ interface CreateVideoJobParams {
   targetLang: string;
   outputMode: string;
   dubVoiceId?: string | null;
+  removeSourceSubs?: boolean;
 }
 
 const CHUNK_SIZE = 6000;
@@ -262,7 +264,7 @@ Text to translate:
 ${text}`;
 
         const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-2.0-flash',
           contents: prompt,
         });
 
@@ -323,7 +325,7 @@ ${text}`;
     let parsed: DetectAndTranslateResult;
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.0-flash',
         contents: prompt,
       });
       const raw = response.text?.trim() || '';
@@ -418,7 +420,7 @@ ${text}`;
   }
 
   async createVideoJob(userId: string, params: CreateVideoJobParams) {
-    const { fileName, inputStorageKey, targetLang, outputMode, dubVoiceId } =
+    const { fileName, inputStorageKey, targetLang, outputMode, dubVoiceId, removeSourceSubs } =
       params;
 
     const user = await this.prisma.user.findUnique({
@@ -441,6 +443,7 @@ ${text}`;
         targetLang,
         outputMode,
         dubVoiceId: dubVoiceId || null,
+        removeSourceSubs: removeSourceSubs ?? false,
         status: 'PENDING',
         progress: 0,
         stepDescription: 'Đang xếp hàng chờ xử lý...',
@@ -462,5 +465,89 @@ ${text}`;
     return this.prisma.videoJob.findUnique({
       where: { id: jobId },
     });
+  }
+
+  async cancelVideoJob(userId: string, jobId: string) {
+    const job = await this.prisma.videoJob.findUnique({ where: { id: jobId } });
+    if (!job) throw new NotFoundException('Job không tồn tại');
+    if (job.userId !== userId) throw new ForbiddenException('Không có quyền truy cập');
+    if (job.status !== 'PENDING' && job.status !== 'PROCESSING') {
+      throw new BadRequestException('Chỉ huỷ được job đang chờ hoặc đang xử lý');
+    }
+    const result = await this.prisma.videoJob.updateMany({
+      where: { id: jobId, status: { in: ['PENDING', 'PROCESSING'] } },
+      data: { status: 'CANCELLED', stepDescription: 'Đã huỷ bởi người dùng.', errorMessage: null },
+    });
+    if (result.count === 0) {
+      throw new BadRequestException('Job đã hoàn tất hoặc đã thay đổi trạng thái, không thể huỷ');
+    }
+    return this.prisma.videoJob.findUnique({ where: { id: jobId } });
+  }
+
+  async deleteVideoJob(userId: string, jobId: string): Promise<string[]> {
+    const job = await this.prisma.videoJob.findUnique({ where: { id: jobId } });
+    if (!job) throw new NotFoundException('Job không tồn tại');
+    if (job.userId !== userId) throw new ForbiddenException('Không có quyền truy cập');
+    if (job.status === 'PROCESSING') {
+      throw new BadRequestException('Không thể xoá job đang xử lý. Hãy huỷ trước.');
+    }
+    await this.prisma.videoJob.delete({ where: { id: jobId } });
+    return [job.inputStorageKey, job.subtitlesUrl, job.outputVideoUrl, job.outputAudioUrl].filter(
+      (k): k is string => !!k,
+    );
+  }
+
+  async translateBatch(
+    texts: string[],
+    sourceLang: string,
+    targetLang: string,
+  ): Promise<string[]> {
+    if (texts.length === 0) return [];
+    const ai = this.geminiClient.getAi();
+    if (!ai) {
+      throw new Error(
+        'GEMINI_API_KEY chưa được cấu hình. Hãy thêm key vào file .env và khởi động lại backend.',
+      );
+    }
+    const prompt = `Translate the following subtitle segments from "${sourceLang}" to "${targetLang}".
+Return ONLY a JSON array of translated strings, in the same order, with no extra keys or wrapper.
+Keep each translation concise and natural for subtitles (at most 12 words).
+
+Input JSON array:
+${JSON.stringify(texts)}`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.0-flash',
+      contents: prompt,
+    });
+    const raw = response.text?.trim() || '';
+    const cleaned = raw
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+    const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+    if (arrayMatch) {
+      try {
+        const parsed = JSON.parse(arrayMatch[0]) as unknown;
+        if (
+          Array.isArray(parsed) &&
+          parsed.length === texts.length &&
+          parsed.every((v) => typeof v === 'string')
+        ) {
+          this.logger.log(`Batch-translated ${texts.length} segments in 1 API call`);
+          return parsed as string[];
+        }
+        if (Array.isArray(parsed) && parsed.every((v) => typeof v === 'string')) {
+          this.logger.warn(
+            `Gemini returned ${(parsed as string[]).length} translations for ${texts.length} segments — padding/trimming`,
+          );
+          return texts.map((_, i) => (parsed as string[])[i] ?? texts[i]);
+        }
+      } catch {
+        // fall through to throw
+      }
+    }
+    this.logger.error(`Gemini batch response unparseable. Raw: ${raw.slice(0, 300)}`);
+    throw new Error(`Gemini trả về định dạng không hợp lệ. Raw: ${raw.slice(0, 200)}`);
   }
 }

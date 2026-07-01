@@ -95,7 +95,8 @@ export function useAuth() {
       if (response.ok) {
         setUser(data);
         setIsLoggedIn(true);
-      } else {
+      } else if (response.status === 401) {
+        // Chỉ logout khi token hết hạn/không hợp lệ — không logout khi lỗi tạm thời (500, network)
         handleLogout();
       }
     } catch (err) {

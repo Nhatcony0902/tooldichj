@@ -14,6 +14,7 @@ import {
   Request,
   Res,
   Inject,
+  Logger,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
@@ -54,6 +55,8 @@ const MAX_TEXT_LENGTH = 20000;
 
 @Controller('translation')
 export class TranslationController {
+  private readonly logger = new Logger(TranslationController.name);
+
   constructor(
     private readonly translationService: TranslationService,
     private readonly queueService: QueueService,
@@ -164,12 +167,14 @@ export class TranslationController {
       const storageKey = `uploads/${Date.now()}-${safeName}`;
       await this.storage.save(file.buffer, storageKey);
 
+      const removeSourceSubs = dto.removeSourceSubs === 'true';
       const job = await this.translationService.createVideoJob(userId, {
         fileName: file.originalname,
         inputStorageKey: storageKey,
         targetLang: dto.targetLang,
         outputMode,
         dubVoiceId: outputModeIncludesDub(outputMode) ? dto.dubVoiceId : null,
+        removeSourceSubs,
       });
       await this.queueService.enqueueVideoJob(job.id);
       return { success: true, job };
@@ -195,6 +200,31 @@ export class TranslationController {
   @Delete('history')
   async clearHistory(@Request() req: RequestWithUser) {
     await this.translationService.clearHistory(req.user.id);
+    return { success: true };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('video-jobs/:id/cancel')
+  async cancelVideoJob(
+    @Param('id') id: string,
+    @Request() req: RequestWithUser,
+  ) {
+    const job = await this.translationService.cancelVideoJob(req.user.id, id);
+    return { success: true, job };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('video-jobs/:id')
+  async deleteVideoJob(
+    @Param('id') id: string,
+    @Request() req: RequestWithUser,
+  ) {
+    const storageKeys = await this.translationService.deleteVideoJob(req.user.id, id);
+    for (const key of storageKeys) {
+      await this.storage.delete(key).catch((err: unknown) => {
+        this.logger.warn(`Failed to delete storage key "${key}": ${err instanceof Error ? err.message : err}`);
+      });
+    }
     return { success: true };
   }
 

@@ -1,25 +1,22 @@
 import ffmpeg from 'fluent-ffmpeg';
 import * as path from 'path';
 
-// TikTok-style subtitle parameters (ASS override via force_style):
-// - FontName    : Arial (widely available, clean)
-// - FontSize    : 20   (relative units; scales with video resolution)
-// - Bold        : 1    (heavy weight for readability)
-// - PrimaryColour: &H00FFFFFF  (opaque white — BGR hex, alpha in high byte)
-// - OutlineColour: &H00000000  (opaque black outline)
-// - Outline     : 3    (thick stroke for contrast over any background)
-// - Shadow      : 1    (subtle drop-shadow for extra pop)
-// - MarginV     : 50   (vertical margin from bottom edge, in pixels)
-// - Alignment   : 2    (bottom-center — standard subtitle position)
+// Netflix/YouTube style: small font in an opaque box, bottom-center.
+// PlayResY=288 anchors FontSize units; FontSize=14 → 14/288 ≈ 4.9% of frame height.
+// BorderStyle=3: opaque box background. BackColour=&H66000000: 60% opacity black (ASS AABBGGRR).
 const TIKTOK_SUBTITLE_STYLE = [
+  'PlayResX=512',
+  'PlayResY=288',
   'FontName=Arial',
-  'FontSize=20',
+  'FontSize=14',
   'Bold=1',
   'PrimaryColour=&H00FFFFFF',
   'OutlineColour=&H00000000',
-  'Outline=3',
-  'Shadow=1',
-  'MarginV=50',
+  'BorderStyle=3',
+  'BackColour=&H66000000',
+  'Outline=0',
+  'Shadow=0',
+  'MarginV=20',
   'Alignment=2',
 ].join(',');
 
@@ -37,6 +34,32 @@ export function burnInSubtitles(
     const subtitleFilter = `subtitles=${path.basename(srtPath)}:force_style='${TIKTOK_SUBTITLE_STYLE}'`;
     ffmpeg(inputVideoPath, { cwd: path.dirname(srtPath) })
       .outputOptions(['-vf', subtitleFilter])
+      .outputOptions(['-c:a', 'copy'])
+      .on('end', () => resolve())
+      .on('error', (err: Error) => reject(err))
+      .save(outputVideoPath);
+  });
+}
+
+/**
+ * Blur the bottom 20% of every frame to obscure pre-existing burned-in
+ * subtitles before overlaying new ones. Opt-in feature (Phase 3).
+ * Uses split→crop→boxblur→overlay filtergraph (standard FFmpeg region blur).
+ */
+export function blurSubtitleArea(
+  inputVideoPath: string,
+  outputVideoPath: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    // split the video into two copies; blur the bottom-20% of one; overlay it back
+    const complexFilter = [
+      'split[a][b]',
+      '[b]crop=iw:ih*0.2:0:ih*0.8[cropped]',
+      '[cropped]boxblur=20:2[blurred]',
+      '[a][blurred]overlay=0:H*0.8[out]',
+    ].join(';');
+    ffmpeg(inputVideoPath)
+      .complexFilter(complexFilter, 'out')
       .outputOptions(['-c:a', 'copy'])
       .on('end', () => resolve())
       .on('error', (err: Error) => reject(err))

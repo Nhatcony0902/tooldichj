@@ -304,6 +304,29 @@
 .badgeProcessing { background: rgba(99, 102, 241, 0.15); color: var(--primary); }
 .badgeCompleted { background: rgba(16, 185, 129, 0.15); color: var(--success); }
 .badgeFailed { background: rgba(239, 68, 68, 0.15); color: var(--error); }
+.badgeCancelled { background: rgba(148, 163, 184, 0.12); color: var(--text-muted); }
+
+.jobCancelBtn,
+.jobDeleteBtn {
+  padding: 0.2rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid;
+  background: transparent;
+  transition: background 0.2s ease, opacity 0.2s ease;
+}
+.jobCancelBtn {
+  border-color: rgba(245, 158, 11, 0.4);
+  color: var(--warning);
+}
+.jobCancelBtn:hover { background: rgba(245, 158, 11, 0.12); }
+.jobDeleteBtn {
+  border-color: rgba(239, 68, 68, 0.4);
+  color: var(--error);
+}
+.jobDeleteBtn:hover { background: rgba(239, 68, 68, 0.12); }
 
 .progressBarBg {
   background: rgba(255, 255, 255, 0.05);

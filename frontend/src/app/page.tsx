@@ -234,9 +234,6 @@ export default function Home() {
               user={user}
               refreshUser={fetchUserMe}
               showToast={showToast}
-              voices={voices}
-              onPreviewVoice={handlePreviewVoice}
-              previewingVoiceId={previewingVoiceId}
             />
           ) : (
             <ProfileSection

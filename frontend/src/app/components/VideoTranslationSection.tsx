@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import styles from "@/app/page.module.css";
-import VoiceSelector, { type Voice } from "./VoiceSelector";
 import { User, VideoJob } from "../types";
 
 // Mirrors backend's MAX_UPLOAD_MB (translation.controller.ts) — the backend
@@ -20,9 +19,6 @@ interface VideoTranslationSectionProps {
     message: string,
     action?: { label: string; onClick: () => void },
   ) => void;
-  voices: Voice[];
-  onPreviewVoice: (voiceId: string) => Promise<void>;
-  previewingVoiceId: string | null;
 }
 
 export default function VideoTranslationSection({
@@ -30,16 +26,12 @@ export default function VideoTranslationSection({
   user,
   refreshUser,
   showToast,
-  voices,
-  onPreviewVoice,
-  previewingVoiceId,
 }: VideoTranslationSectionProps) {
   // Video Translation States
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState("");
   const [targetLangVideo, setTargetLangVideo] = useState("vi");
   const [outputModeVideo, setOutputModeVideo] = useState("burn");
-  const [dubVoiceIdVideo, setDubVoiceIdVideo] = useState("vi-VN-HoaiMyNeural");
   const [removeSourceSubsVideo, setRemoveSourceSubsVideo] = useState(false);
   const [jobs, setJobs] = useState<VideoJob[]>([]);
 
@@ -116,9 +108,6 @@ export default function VideoTranslationSection({
       formData.append("video", videoFile);
       formData.append("targetLang", targetLangVideo);
       formData.append("outputMode", outputModeVideo);
-      if (outputModeVideo === "dub" || outputModeVideo === "burn+dub") {
-        formData.append("dubVoiceId", dubVoiceIdVideo);
-      }
       formData.append("removeSourceSubs", String(removeSourceSubsVideo));
 
       const response = await fetch("http://localhost:3001/translation/video-job", {
@@ -298,19 +287,6 @@ export default function VideoTranslationSection({
               </select>
             </div>
           </div>
-
-          {(outputModeVideo === "dub" || outputModeVideo === "burn+dub") && (
-            <div className={styles.inputGroup}>
-              <span className={styles.inputLabel}>Giọng lồng tiếng</span>
-              <VoiceSelector
-                voices={voices}
-                selectedVoiceId={dubVoiceIdVideo}
-                onChange={setDubVoiceIdVideo}
-                onPreview={onPreviewVoice}
-                previewingVoiceId={previewingVoiceId}
-              />
-            </div>
-          )}
 
           <div className={styles.inputGroup}>
             <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>

@@ -5,13 +5,13 @@ import { GeminiClientService } from '../gemini/gemini-client.service';
 import { GoogleGenAI } from '@google/genai';
 import { InsufficientCreditsError } from '../credit/insufficient-credits.error';
 import { isRateLimitError } from './pipeline/rate-limit.util';
+import { stripMarkdownFence } from './pipeline/json-parse.util';
 
 interface CreateVideoJobParams {
   fileName: string;
   inputStorageKey: string;
   targetLang: string;
   outputMode: string;
-  dubVoiceId?: string | null;
   removeSourceSubs?: boolean;
 }
 
@@ -21,11 +21,6 @@ const CHUNK_SIZE = 6000;
 // options. Any auto-detect response outside this set is treated as an
 // unreliable detection rather than risking a garbled silent mistranslation.
 const SUPPORTED_LANG_CODES = ['en', 'vi', 'zh', 'ja'];
-
-function stripMarkdownFence(text: string): string {
-  const match = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  return match ? match[1] : text;
-}
 
 interface DetectAndTranslateResult {
   detectedLang: string;
@@ -420,7 +415,7 @@ ${text}`;
   }
 
   async createVideoJob(userId: string, params: CreateVideoJobParams) {
-    const { fileName, inputStorageKey, targetLang, outputMode, dubVoiceId, removeSourceSubs } =
+    const { fileName, inputStorageKey, targetLang, outputMode, removeSourceSubs } =
       params;
 
     const user = await this.prisma.user.findUnique({
@@ -442,7 +437,6 @@ ${text}`;
         inputStorageKey,
         targetLang,
         outputMode,
-        dubVoiceId: dubVoiceId || null,
         removeSourceSubs: removeSourceSubs ?? false,
         status: 'PENDING',
         progress: 0,

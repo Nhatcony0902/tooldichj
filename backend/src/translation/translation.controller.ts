@@ -29,12 +29,7 @@ import {
   STORAGE_PROVIDER,
   type IStorageProvider,
 } from '../storage/storage.interface';
-import {
-  OUTPUT_MODES,
-  isValidOutputMode,
-  outputModeIncludesDub,
-} from './pipeline/output-mode';
-import { isValidVoiceId } from '../tts/voices.config';
+import { OUTPUT_MODES, isValidOutputMode } from './pipeline/output-mode';
 import { InsufficientCreditsError } from '../credit/insufficient-credits.error';
 
 interface RequestWithUser {
@@ -151,14 +146,6 @@ export class TranslationController {
         `Invalid outputMode "${outputMode}". Must be one of: ${OUTPUT_MODES.join(', ')}`,
       );
     }
-    if (outputModeIncludesDub(outputMode)) {
-      if (!dto.dubVoiceId || !isValidVoiceId(dto.dubVoiceId)) {
-        throw new BadRequestException(
-          'A valid dubVoiceId is required when outputMode includes dubbing',
-        );
-      }
-    }
-
     try {
       // basename() strips any directory components a crafted originalname
       // could carry (e.g. "../../etc/passwd"), so the storage key can never
@@ -173,7 +160,6 @@ export class TranslationController {
         inputStorageKey: storageKey,
         targetLang: dto.targetLang,
         outputMode,
-        dubVoiceId: outputModeIncludesDub(outputMode) ? dto.dubVoiceId : null,
         removeSourceSubs,
       });
       await this.queueService.enqueueVideoJob(job.id);

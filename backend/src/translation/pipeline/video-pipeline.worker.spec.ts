@@ -3,7 +3,8 @@ import { VideoPipelineWorker } from './video-pipeline.worker';
 function buildWorker() {
   const prisma = {
     videoJob: {
-      update: jest.fn().mockResolvedValue({}),
+      // onFailed persists via updateMany (status-guarded), not update.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     user: {
       update: jest.fn(),
@@ -12,7 +13,6 @@ function buildWorker() {
   const worker = new VideoPipelineWorker(
     prisma as any,
     {} as any, // translationService — unused by onFailed
-    {} as any, // ttsService — unused by onFailed
     {} as any, // storage — unused by onFailed
   );
   return { worker, prisma };
@@ -29,7 +29,7 @@ describe('VideoPipelineWorker.onFailed', () => {
 
     await worker.onFailed(job, new Error('transient'));
 
-    expect(prisma.videoJob.update).not.toHaveBeenCalled();
+    expect(prisma.videoJob.updateMany).not.toHaveBeenCalled();
   });
 
   it('sets FAILED status with a sanitized errorMessage after the final attempt, and never touches credits', async () => {
@@ -45,12 +45,15 @@ describe('VideoPipelineWorker.onFailed', () => {
       new Error('/tmp/whatever/leaked-path ffmpeg exited 1'),
     );
 
-    expect(prisma.videoJob.update).toHaveBeenCalledWith({
-      where: { id: 'job1' },
+    expect(prisma.videoJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'job1',
+        status: { notIn: ['COMPLETED', 'CANCELLED'] },
+      },
       data: expect.objectContaining({ status: 'FAILED' }),
     });
     // The raw error (which can contain filesystem paths) must never leak into errorMessage.
-    const persisted = prisma.videoJob.update.mock.calls[0][0].data.errorMessage;
+    const persisted = prisma.videoJob.updateMany.mock.calls[0][0].data.errorMessage;
     expect(persisted).not.toContain('/tmp');
     expect(prisma.user.update).not.toHaveBeenCalled();
   });
@@ -58,6 +61,6 @@ describe('VideoPipelineWorker.onFailed', () => {
   it('does nothing if the job is undefined', async () => {
     const { worker, prisma } = buildWorker();
     await worker.onFailed(undefined, new Error('x'));
-    expect(prisma.videoJob.update).not.toHaveBeenCalled();
+    expect(prisma.videoJob.updateMany).not.toHaveBeenCalled();
   });
 });

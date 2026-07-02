@@ -1,4 +1,5 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { CreditService } from '../credit/credit.service';
 import { GeminiClientService } from '../gemini/gemini-client.service';
@@ -6,6 +7,8 @@ import { GoogleGenAI } from '@google/genai';
 import { InsufficientCreditsError } from '../credit/insufficient-credits.error';
 import { isRateLimitError } from './pipeline/rate-limit.util';
 import { stripMarkdownFence } from './pipeline/json-parse.util';
+import { parseStoredSegments, applySegmentEdits } from './pipeline/subtitle.service';
+import { SegmentEditDto } from './dto/update-segments.dto';
 
 interface CreateVideoJobParams {
   fileName: string;
@@ -465,15 +468,63 @@ ${text}`;
     const job = await this.prisma.videoJob.findUnique({ where: { id: jobId } });
     if (!job) throw new NotFoundException('Job không tồn tại');
     if (job.userId !== userId) throw new ForbiddenException('Không có quyền truy cập');
-    if (job.status !== 'PENDING' && job.status !== 'PROCESSING') {
-      throw new BadRequestException('Chỉ huỷ được job đang chờ hoặc đang xử lý');
+    if (!['PENDING', 'PROCESSING', 'AWAITING_REVIEW'].includes(job.status)) {
+      throw new BadRequestException('Chỉ huỷ được job đang chờ, đang xử lý hoặc đang chờ duyệt');
     }
     const result = await this.prisma.videoJob.updateMany({
-      where: { id: jobId, status: { in: ['PENDING', 'PROCESSING'] } },
+      where: { id: jobId, status: { in: ['PENDING', 'PROCESSING', 'AWAITING_REVIEW'] } },
       data: { status: 'CANCELLED', stepDescription: 'Đã huỷ bởi người dùng.', errorMessage: null },
     });
     if (result.count === 0) {
       throw new BadRequestException('Job đã hoàn tất hoặc đã thay đổi trạng thái, không thể huỷ');
+    }
+    return this.prisma.videoJob.findUnique({ where: { id: jobId } });
+  }
+
+  async getReviewSegments(userId: string, jobId: string) {
+    const job = await this.prisma.videoJob.findUnique({ where: { id: jobId } });
+    if (!job) throw new NotFoundException('Job không tồn tại');
+    if (job.userId !== userId) throw new ForbiddenException('Không có quyền truy cập');
+    if (job.status !== 'AWAITING_REVIEW') {
+      throw new BadRequestException('Job chưa ở trạng thái chờ duyệt');
+    }
+    const segments = parseStoredSegments(job.translatedSegments).map((s, index) => ({
+      index, start: s.start, end: s.end, text: s.text, translatedText: s.translatedText,
+    }));
+    return segments;
+  }
+
+  async saveReviewSegments(userId: string, jobId: string, edits: SegmentEditDto[]) {
+    const job = await this.prisma.videoJob.findUnique({ where: { id: jobId } });
+    if (!job) throw new NotFoundException('Job không tồn tại');
+    if (job.userId !== userId) throw new ForbiddenException('Không có quyền truy cập');
+    if (job.status !== 'AWAITING_REVIEW') {
+      throw new BadRequestException('Job chưa ở trạng thái chờ duyệt');
+    }
+    let merged;
+    try {
+      const stored = parseStoredSegments(job.translatedSegments);
+      merged = applySegmentEdits(stored, edits);   // throws on malformed edits (R3)
+    } catch {
+      throw new BadRequestException('Danh sách phụ đề không hợp lệ');
+    }
+    await this.prisma.videoJob.update({
+      where: { id: jobId },
+      data: { translatedSegments: JSON.parse(JSON.stringify(merged)) as Prisma.InputJsonValue },
+    });
+  }
+
+  // Atomic transition; returns the job so the controller can enqueue the burn phase.
+  async confirmVideoJob(userId: string, jobId: string) {
+    const job = await this.prisma.videoJob.findUnique({ where: { id: jobId } });
+    if (!job) throw new NotFoundException('Job không tồn tại');
+    if (job.userId !== userId) throw new ForbiddenException('Không có quyền truy cập');
+    const result = await this.prisma.videoJob.updateMany({
+      where: { id: jobId, status: 'AWAITING_REVIEW' },
+      data: { status: 'PROCESSING', progress: 88, stepDescription: 'Đang hoàn tất video...' },
+    });
+    if (result.count === 0) {
+      throw new BadRequestException('Job đã được xác nhận hoặc đã thay đổi trạng thái');
     }
     return this.prisma.videoJob.findUnique({ where: { id: jobId } });
   }

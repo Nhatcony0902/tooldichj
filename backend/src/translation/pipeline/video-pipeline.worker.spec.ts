@@ -64,3 +64,41 @@ describe('VideoPipelineWorker.onFailed', () => {
     expect(prisma.videoJob.updateMany).not.toHaveBeenCalled();
   });
 });
+
+describe('VideoPipelineWorker.process branch routing', () => {
+  it('routes job.name "process-video-burn" to the burn phase', async () => {
+    const { worker } = buildWorker();
+    const burnSpy = jest
+      .spyOn(worker as any, 'runBurnPhase')
+      .mockResolvedValue(undefined);
+    const translateSpy = jest
+      .spyOn(worker as any, 'runTranslatePhase')
+      .mockResolvedValue(undefined);
+
+    await worker.process({
+      name: 'process-video-burn',
+      data: { jobId: 'job1' },
+    } as any);
+
+    expect(burnSpy).toHaveBeenCalledWith('job1');
+    expect(translateSpy).not.toHaveBeenCalled();
+  });
+
+  it('routes job.name "process-video" to the translate phase', async () => {
+    const { worker } = buildWorker();
+    const burnSpy = jest
+      .spyOn(worker as any, 'runBurnPhase')
+      .mockResolvedValue(undefined);
+    const translateSpy = jest
+      .spyOn(worker as any, 'runTranslatePhase')
+      .mockResolvedValue(undefined);
+
+    await worker.process({
+      name: 'process-video',
+      data: { jobId: 'job2' },
+    } as any);
+
+    expect(translateSpy).toHaveBeenCalledWith('job2');
+    expect(burnSpy).not.toHaveBeenCalled();
+  });
+});

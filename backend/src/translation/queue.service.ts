@@ -24,4 +24,18 @@ export class QueueService {
     );
     this.logger.log(`Enqueued video job ${jobId} onto ${VIDEO_PIPELINE_QUEUE}`);
   }
+
+  async enqueueVideoBurnJob(jobId: string): Promise<void> {
+    await this.queue.add(
+      'process-video-burn',
+      { jobId },
+      {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 },
+        removeOnComplete: true,
+        removeOnFail: false,
+      },
+    );
+    this.logger.log(`Enqueued burn phase for video job ${jobId}`);
+  }
 }

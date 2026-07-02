@@ -14,7 +14,7 @@ import {
 import { VIDEO_PIPELINE_QUEUE } from '../../queue/queue.module';
 import { extractAudio } from './audio-extractor';
 import { transcribeAudio } from './stt.service';
-import { translateSegments, buildSrt } from './subtitle.service';
+import { translateSegments, buildSrt, parseStoredSegments } from './subtitle.service';
 import { burnInSubtitles, blurSubtitleArea } from './burn-in.service';
 import { detectSubtitleRegion } from './subtitle-region.service';
 import {
@@ -41,7 +41,17 @@ export class VideoPipelineWorker extends WorkerHost {
   }
 
   async process(job: Job<VideoPipelineJobData>): Promise<void> {
-    const { jobId } = job.data;
+    if (job.name === 'process-video-burn') {
+      return this.runBurnPhase(job.data.jobId);
+    }
+    return this.runTranslatePhase(job.data.jobId);
+  }
+
+  /**
+   * Phase A: prep -> extractAudio -> STT -> translate -> persist
+   * translatedSegments -> AWAITING_REVIEW. No burn, no credit deduction.
+   */
+  private async runTranslatePhase(jobId: string): Promise<void> {
     const videoJob = await this.prisma.videoJob.findUnique({
       where: { id: jobId },
     });
@@ -49,9 +59,15 @@ export class VideoPipelineWorker extends WorkerHost {
       this.logger.warn(`VideoJob ${jobId} not found, skipping`);
       return;
     }
-    if (videoJob.status === 'COMPLETED') {
+    // R1: a duplicate enqueue of a job that already finished translating (or
+    // was cancelled) must not re-translate / re-persist segments.
+    if (
+      videoJob.status === 'COMPLETED' ||
+      videoJob.status === 'CANCELLED' ||
+      videoJob.status === 'AWAITING_REVIEW'
+    ) {
       this.logger.log(
-        `VideoJob ${jobId} already COMPLETED, skipping duplicate enqueue`,
+        `VideoJob ${jobId} already ${videoJob.status}, skipping duplicate enqueue`,
       );
       return;
     }
@@ -121,9 +137,84 @@ export class VideoPipelineWorker extends WorkerHost {
           });
         },
       );
-      const srtContent = buildSrt(translatedSegments);
+
+      await this.prisma.videoJob.update({
+        where: { id: jobId },
+        data: {
+          translatedSegments: JSON.parse(
+            JSON.stringify(translatedSegments),
+          ) as Prisma.InputJsonValue,
+        },
+      });
+      await this.updateJob(jobId, {
+        status: 'AWAITING_REVIEW',
+        progress: 85,
+        stepDescription: 'Đã dịch xong — chờ bạn kiểm tra & xác nhận phụ đề.',
+      });
+
+      this.logger.log(`VideoJob ${jobId} translated, awaiting review`);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch((err) => {
+        this.logger.warn(
+          `Failed to clean up temp dir ${tmpDir}`,
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }
+  }
+
+  /**
+   * Phase B: rebuild SRT from the (possibly edited) stored segments ->
+   * optional blur -> burn-in -> save video -> COMPLETED + deduct 10 credits.
+   */
+  private async runBurnPhase(jobId: string): Promise<void> {
+    const videoJob = await this.prisma.videoJob.findUnique({
+      where: { id: jobId },
+    });
+    if (!videoJob) {
+      this.logger.warn(`VideoJob ${jobId} not found, skipping`);
+      return;
+    }
+    if (videoJob.status === 'COMPLETED') {
+      this.logger.log(
+        `VideoJob ${jobId} already COMPLETED, skipping duplicate enqueue`,
+      );
+      return;
+    }
+    if (!videoJob.translatedSegments) {
+      throw new Error(
+        `VideoJob ${jobId} has no translatedSegments to resume from (not yet reviewed)`,
+      );
+    }
+    if (!videoJob.inputStorageKey) {
+      throw new Error('Video job has no uploaded input file');
+    }
+
+    // Confirm endpoint already flips the status to PROCESSING; keep this
+    // idempotent in case the burn worker retries.
+    await this.updateJob(jobId, {
+      status: 'PROCESSING',
+      progress: 86,
+      stepDescription: 'Đang chuẩn bị chèn phụ đề...',
+    });
+
+    const tmpDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), `videojob-${jobId}-burn-`),
+    );
+    try {
+      await this.assertNotCancelled(jobId);
+
+      const stored = parseStoredSegments(videoJob.translatedSegments);
+      const srtContent = buildSrt(stored);
       const srtKey = `outputs/${jobId}/subtitles.srt`;
       await this.storage.save(Buffer.from(srtContent, 'utf-8'), srtKey);
+
+      const inputBuffer = await this.storage.read(videoJob.inputStorageKey);
+      const inputPath = path.join(
+        tmpDir,
+        'input' + (path.extname(videoJob.fileName) || '.mp4'),
+      );
+      await fs.writeFile(inputPath, inputBuffer);
 
       // outputMode is a plain String column (no DB-level enum), so a
       // manually-edited row or pre-validation legacy row could in theory
@@ -142,7 +233,7 @@ export class VideoPipelineWorker extends WorkerHost {
         let burnSource = inputPath;
         if (videoJob.removeSourceSubs) {
           await this.updateJob(jobId, {
-            progress: 76,
+            progress: 88,
             stepDescription: 'Đang dò vị trí phụ đề gốc...',
           });
           const region = await detectSubtitleRegion(
@@ -152,7 +243,7 @@ export class VideoPipelineWorker extends WorkerHost {
           );
           if (region) {
             await this.updateJob(jobId, {
-              progress: 78,
+              progress: 90,
               stepDescription: 'Đang làm mờ phụ đề gốc...',
             });
             const blurredPath = path.join(tmpDir, 'blurred.mp4');
@@ -164,8 +255,9 @@ export class VideoPipelineWorker extends WorkerHost {
             );
           }
         }
+        await this.assertNotCancelled(jobId);
         await this.updateJob(jobId, {
-          progress: 80,
+          progress: 92,
           stepDescription: 'Đang chèn cứng phụ đề vào video...',
         });
         const srtPath = path.join(tmpDir, 'subtitles.srt');

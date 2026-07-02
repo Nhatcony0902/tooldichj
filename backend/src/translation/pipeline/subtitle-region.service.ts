@@ -1,14 +1,38 @@
 import { Logger } from '@nestjs/common';
 import type { GoogleGenAI } from '@google/genai';
+import { UnrecoverableError } from 'bullmq';
 import ffmpeg from 'fluent-ffmpeg';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getAudioDuration } from './audio-extractor'; // generic ffprobe, works on video files too
 import { stripMarkdownFence } from './json-parse.util';
+import {
+  withRetry,
+  isRateLimitError,
+  isQuotaExhaustedError,
+} from './rate-limit.util';
+
+// withRetry (used per-sample below) re-throws a genuine quota-exhausted
+// error as UnrecoverableError with a translated message, which no longer
+// matches isQuotaExhaustedError's English-phrase regex. Treat it the same
+// way — it is the ONLY error withRetry ever wraps this way.
+function isQuotaExhaustedSignal(err: unknown): boolean {
+  return isQuotaExhaustedError(err) || err instanceof UnrecoverableError;
+}
 
 export interface SubtitleRegion {
   yRatio: number; // top edge, fraction of frame height (0=top, 1=bottom)
   heightRatio: number; // region height, fraction of frame height
+}
+
+export interface SubtitleRegionResult {
+  region: SubtitleRegion | null;
+  // true = detection could not complete due to an API error (retries
+  // exhausted); false = either a region was found, or every sample
+  // genuinely showed no burned-in subtitle. Callers use this to distinguish
+  // "blur skipped because nothing is there" from "blur skipped because we
+  // couldn't tell" (B2).
+  failedDueToError: boolean;
 }
 
 const logger = new Logger('subtitle-region');
@@ -36,39 +60,61 @@ export async function detectSubtitleRegion(
   ai: GoogleGenAI | null,
   videoPath: string,
   tmpDir: string,
-): Promise<SubtitleRegion | null> {
-  if (!ai) return null; // no GEMINI_API_KEY — caller skips blur
+): Promise<SubtitleRegionResult> {
+  if (!ai) return { region: null, failedDueToError: false }; // no GEMINI_API_KEY — caller skips blur (legit, quiet)
 
   const duration = await getAudioDuration(videoPath);
-  if (!duration || duration <= 0) return null;
+  if (!duration || duration <= 0) return { region: null, failedDueToError: false };
 
   const timestamps = SAMPLE_POSITIONS.map((f) => duration * f).filter(
     (t) => t > 0,
   );
   const regions: SubtitleRegion[] = [];
+  let sawApiError = false;
 
   for (let i = 0; i < timestamps.length; i += 1) {
     const framePath = path.join(tmpDir, `region-sample-${i}.jpg`);
     try {
       await extractFrame(videoPath, timestamps[i], framePath);
-      const region = await detectRegionInFrame(ai, framePath);
+      // One retry on a transient rate limit before giving up on this sample.
+      const region = await withRetry(() => detectRegionInFrame(ai, framePath), {
+        maxAttempts: 2,
+      });
       if (region) regions.push(region);
     } catch (err) {
-      // One bad frame or one failed vision call shouldn't fail the whole job.
-      logger.warn(
-        `Subtitle-region sample ${i} failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      if (isQuotaExhaustedSignal(err)) {
+        // Daily/billing quota — the remaining samples would fail identically.
+        sawApiError = true;
+        logger.warn(
+          `Subtitle-region detection aborted (quota exhausted) at sample ${i}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        break;
+      }
+      if (isRateLimitError(err)) {
+        sawApiError = true;
+        logger.warn(
+          `Subtitle-region sample ${i} rate-limited after retry: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } else {
+        // A bad frame or unparseable response — not an API-availability
+        // failure, so it doesn't count against "detection failed".
+        logger.warn(
+          `Subtitle-region sample ${i} failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 
-  if (regions.length === 0) return null; // no subtitle detected in any sample
+  if (regions.length === 0) {
+    return { region: null, failedDueToError: sawApiError };
+  }
 
   const top = Math.max(0, Math.min(...regions.map((r) => r.yRatio)) - REGION_PADDING);
   const bottom = Math.min(
     1,
     Math.max(...regions.map((r) => r.yRatio + r.heightRatio)) + REGION_PADDING,
   );
-  return { yRatio: top, heightRatio: bottom - top };
+  return { region: { yRatio: top, heightRatio: bottom - top }, failedDueToError: false };
 }
 
 function extractFrame(

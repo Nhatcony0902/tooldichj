@@ -3,6 +3,7 @@ import { TranslationService } from '../translation.service';
 import { TranscriptSegment } from './stt.service';
 import { withRetry } from './rate-limit.util';
 import { translateBatchViaGroq } from './groq-translate.service';
+import { isIncompleteTranslationError } from './incomplete-translation.error';
 
 const logger = new Logger('subtitle.service');
 
@@ -52,6 +53,11 @@ function wrapToTwoLines(text: string): string {
   return lines.filter(Boolean).join('\n');
 }
 
+export interface TranslateSegmentsResult {
+  segments: TranslatedSegment[];
+  untranslatedCount: number;
+}
+
 export async function translateSegments(
   translationService: TranslationService,
   _userId: string,
@@ -59,28 +65,50 @@ export async function translateSegments(
   sourceLang: string,
   targetLang: string,
   onProgress?: (done: number, total: number) => void,
-): Promise<TranslatedSegment[]> {
+): Promise<TranslateSegmentsResult> {
   const texts = segments.map((s) => s.text);
-  let translatedTexts: string[];
+  let usable: string[];
   try {
     // Groq LLaMA (6,000 RPM / 14,400 RPD) handles video quota better than
     // Gemini (15 RPM / 1,500 RPD). Falls back to Gemini if Groq is unavailable.
-    translatedTexts = await withRetry<string[]>(() =>
-      translateBatchViaGroq(texts, sourceLang, targetLang),
+    // An incomplete result (short/empty items) retries the whole batch
+    // before falling back — see rate-limit.util.ts `retryable`.
+    usable = await withRetry<string[]>(
+      () => translateBatchViaGroq(texts, sourceLang, targetLang),
+      { retryable: isIncompleteTranslationError },
     );
   } catch (groqErr) {
     logger.warn(
       `Groq subtitle translation failed, falling back to Gemini: ${groqErr instanceof Error ? groqErr.message : String(groqErr)}`,
     );
-    translatedTexts = await withRetry<string[]>(() =>
-      translationService.translateBatch(texts, sourceLang, targetLang),
-    );
+    try {
+      usable = await withRetry<string[]>(
+        () => translationService.translateBatch(texts, sourceLang, targetLang),
+        { retryable: isIncompleteTranslationError },
+      );
+    } catch (geminiErr) {
+      // A genuine error (bad key, unparseable JSON, non-429 failure) must
+      // fail the job visibly — only an incomplete-after-retries result
+      // degrades-and-completes.
+      if (!isIncompleteTranslationError(geminiErr)) throw geminiErr;
+      usable = geminiErr.partial;
+    }
   }
   onProgress?.(segments.length, segments.length);
-  return segments.map((segment, i) => ({
-    ...segment,
-    translatedText: translatedTexts[i] || segment.text,
-  }));
+
+  let untranslatedCount = 0;
+  const out = segments.map((segment, i) => {
+    const t = usable[i]?.trim();
+    if (t) return { ...segment, translatedText: usable[i] };
+    untranslatedCount += 1;
+    return { ...segment, translatedText: segment.text }; // recorded fallback, not silent
+  });
+  if (untranslatedCount > 0) {
+    logger.warn(
+      `translateSegments: ${untranslatedCount}/${segments.length} segments left as source after retries exhausted`,
+    );
+  }
+  return { segments: out, untranslatedCount };
 }
 
 // Parse/validate a stored translatedSegments JSON blob back into typed segments.

@@ -6,6 +6,7 @@ import { GeminiClientService } from '../gemini/gemini-client.service';
 import { GoogleGenAI } from '@google/genai';
 import { InsufficientCreditsError } from '../credit/insufficient-credits.error';
 import { isRateLimitError } from './pipeline/rate-limit.util';
+import { IncompleteTranslationError } from './pipeline/incomplete-translation.error';
 import { stripMarkdownFence } from './pipeline/json-parse.util';
 import { parseStoredSegments, applySegmentEdits } from './pipeline/subtitle.service';
 import { SegmentEditDto } from './dto/update-segments.dto';
@@ -420,35 +421,66 @@ ${text}`;
   async createVideoJob(userId: string, params: CreateVideoJobParams) {
     const { fileName, inputStorageKey, targetLang, outputMode, removeSourceSubs } =
       params;
+    const VIDEO_JOB_COST = 10;
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { credits: true },
+    return this.prisma.$transaction(async (tx) => {
+      // Reserve credits and create the job row atomically in the same
+      // transaction: an atomic conditional decrement prevents concurrent
+      // job creations from over-committing the same balance.
+      const result = await tx.user.updateMany({
+        where: { id: userId, credits: { gte: VIDEO_JOB_COST } },
+        data: { credits: { decrement: VIDEO_JOB_COST } },
+      });
+      if (result.count === 0) {
+        throw new InsufficientCreditsError(
+          'Tài khoản cần có ít nhất 10 credits để thực hiện dịch video!',
+        );
+      }
+      return tx.videoJob.create({
+        data: {
+          fileName,
+          inputStorageKey,
+          targetLang,
+          outputMode,
+          removeSourceSubs: removeSourceSubs ?? false,
+          status: 'PENDING',
+          progress: 0,
+          stepDescription: 'Đang xếp hàng chờ xử lý...',
+          userId,
+        },
+      });
     });
-    if (!user) {
-      throw new Error('User not found');
-    }
-    if (user.credits < 10) {
-      throw new InsufficientCreditsError(
-        'Tài khoản cần có ít nhất 10 credits để thực hiện dịch video!',
-      );
-    }
+  }
 
-    const job = await this.prisma.videoJob.create({
+  // Guarded PENDING -> FAILED transition used when enqueueing the initial
+  // video-processing job fails after the job row + credit reservation were
+  // already committed. Exactly-once refund: only reached when updateMany
+  // actually flipped the status.
+  async failOrphanedVideoJob(jobId: string): Promise<void> {
+    const result = await this.prisma.videoJob.updateMany({
+      where: { id: jobId, status: 'PENDING' },
       data: {
-        fileName,
-        inputStorageKey,
-        targetLang,
-        outputMode,
-        removeSourceSubs: removeSourceSubs ?? false,
-        status: 'PENDING',
-        progress: 0,
-        stepDescription: 'Đang xếp hàng chờ xử lý...',
-        userId,
+        status: 'FAILED',
+        errorMessage: 'Không thể xếp hàng xử lý. Vui lòng thử lại.',
       },
     });
+    if (result.count > 0) {
+      const job = await this.prisma.videoJob.findUnique({ where: { id: jobId } });
+      if (job) {
+        await this.creditService.refundCredit(job.userId, 10);
+      }
+    }
+  }
 
-    return job;
+  // Guarded PROCESSING -> AWAITING_REVIEW rollback used when enqueueing the
+  // burn phase fails after confirmVideoJob already advanced the job. No
+  // credit refund here: confirm doesn't charge, Phase 1 already charged at
+  // creation. A concurrent duplicate confirm attempt safely no-ops (count === 0).
+  async rollbackToAwaitingReview(jobId: string): Promise<void> {
+    await this.prisma.videoJob.updateMany({
+      where: { id: jobId, status: 'PROCESSING' },
+      data: { status: 'AWAITING_REVIEW' },
+    });
   }
 
   async getVideoJobs(userId: string) {
@@ -478,6 +510,8 @@ ${text}`;
     if (result.count === 0) {
       throw new BadRequestException('Job đã hoàn tất hoặc đã thay đổi trạng thái, không thể huỷ');
     }
+    // Exactly-once: only reached when updateMany actually flipped the status.
+    await this.creditService.refundCredit(userId, 10);
     return this.prisma.videoJob.findUnique({ where: { id: jobId } });
   }
 
@@ -510,7 +544,14 @@ ${text}`;
     }
     await this.prisma.videoJob.update({
       where: { id: jobId },
-      data: { translatedSegments: JSON.parse(JSON.stringify(merged)) as Prisma.InputJsonValue },
+      data: {
+        translatedSegments: JSON.parse(JSON.stringify(merged)) as Prisma.InputJsonValue,
+        // The user just reviewed and confirmed every segment's text — the
+        // pre-review "N segments left untranslated" count is no longer a
+        // reliable signal (edits may have fixed them) and would otherwise
+        // show a stale warning on the completed video (B1 follow-up).
+        untranslatedSegmentCount: 0,
+      },
     });
   }
 
@@ -574,22 +615,29 @@ ${JSON.stringify(texts)}`;
     if (arrayMatch) {
       try {
         const parsed = JSON.parse(arrayMatch[0]) as unknown;
-        if (
-          Array.isArray(parsed) &&
-          parsed.length === texts.length &&
-          parsed.every((v) => typeof v === 'string')
-        ) {
-          this.logger.log(`Batch-translated ${texts.length} segments in 1 API call`);
-          return parsed as string[];
-        }
         if (Array.isArray(parsed) && parsed.every((v) => typeof v === 'string')) {
+          const arr = parsed as string[];
+          // An item only counts as "incomplete" when its SOURCE text had
+          // actual content — a genuinely empty/whitespace source segment
+          // legitimately translates to an empty string.
+          const complete =
+            arr.length === texts.length &&
+            arr.every((t, i) => t.trim().length > 0 || !texts[i].trim());
+          if (complete) {
+            this.logger.log(`Batch-translated ${texts.length} segments in 1 API call`);
+            return arr;
+          }
           this.logger.warn(
-            `Gemini returned ${(parsed as string[]).length} translations for ${texts.length} segments — padding/trimming`,
+            `Gemini translate incomplete: expected ${texts.length}, got ${arr.length} usable items. Will retry.`,
           );
-          return texts.map((_, i) => (parsed as string[])[i] ?? texts[i]);
+          const partial = texts.map((_, i) => (arr[i]?.trim() ? arr[i] : ''));
+          throw new IncompleteTranslationError(partial, texts.length);
         }
-      } catch {
-        // fall through to throw
+      } catch (err) {
+        // Re-throw an incomplete-translation signal so the caller can retry
+        // the whole batch; only a genuine JSON.parse failure falls through
+        // to the generic "unparseable" error below.
+        if (err instanceof IncompleteTranslationError) throw err;
       }
     }
     this.logger.error(`Gemini batch response unparseable. Raw: ${raw.slice(0, 300)}`);

@@ -16,6 +16,9 @@ import {
   Res,
   Inject,
   Logger,
+  HttpException,
+  HttpStatus,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
@@ -102,15 +105,7 @@ export class TranslationController {
         detectedLang,
       };
     } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error
-          ? error.message
-          : 'An error occurred during translation';
-      return {
-        success: false,
-        error: errorMessage,
-        code: error instanceof InsufficientCreditsError ? 'INSUFFICIENT_CREDITS' : undefined,
-      };
+      throw this.mapToHttpException(error);
     }
   }
 
@@ -148,14 +143,14 @@ export class TranslationController {
         `Invalid outputMode "${outputMode}". Must be one of: ${OUTPUT_MODES.join(', ')}`,
       );
     }
-    try {
-      // basename() strips any directory components a crafted originalname
-      // could carry (e.g. "../../etc/passwd"), so the storage key can never
-      // resolve outside the upload directory.
-      const safeName = path.basename(file.originalname);
-      const storageKey = `uploads/${Date.now()}-${safeName}`;
-      await this.storage.save(file.buffer, storageKey);
+    // basename() strips any directory components a crafted originalname
+    // could carry (e.g. "../../etc/passwd"), so the storage key can never
+    // resolve outside the upload directory.
+    const safeName = path.basename(file.originalname);
+    const storageKey = `uploads/${Date.now()}-${safeName}`;
+    await this.storage.save(file.buffer, storageKey);
 
+    try {
       const removeSourceSubs = dto.removeSourceSubs === 'true';
       const job = await this.translationService.createVideoJob(userId, {
         fileName: file.originalname,
@@ -164,16 +159,25 @@ export class TranslationController {
         outputMode,
         removeSourceSubs,
       });
-      await this.queueService.enqueueVideoJob(job.id);
+      await this.enqueueOrFail(job.id, storageKey);
       return { success: true, job };
     } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : 'Failed to create video job';
-      return {
-        success: false,
-        error: errorMessage,
-        code: error instanceof InsufficientCreditsError ? 'INSUFFICIENT_CREDITS' : undefined,
-      };
+      await this.storage.delete(storageKey).catch((err: unknown) => {
+        this.logger.warn(`Failed to clean up orphaned upload "${storageKey}": ${err instanceof Error ? err.message : err}`);
+      });
+      throw this.mapToHttpException(error);
+    }
+  }
+
+  private async enqueueOrFail(jobId: string, storageKey: string): Promise<void> {
+    try {
+      await this.queueService.enqueueVideoJob(jobId);
+    } catch (error: unknown) {
+      this.logger.error(`Failed to enqueue VideoJob ${jobId}, marking FAILED`, error instanceof Error ? error.stack : error);
+      await this.translationService.failOrphanedVideoJob(jobId).catch((err: unknown) => {
+        this.logger.error(`Failed to mark orphaned VideoJob ${jobId} as FAILED`, err);
+      });
+      throw error;
     }
   }
 
@@ -226,7 +230,15 @@ export class TranslationController {
   @Post('video-jobs/:id/confirm')
   async confirmJob(@Param('id') id: string, @Request() req: RequestWithUser) {
     const job = await this.translationService.confirmVideoJob(req.user.id, id);
-    await this.queueService.enqueueVideoBurnJob(id);   // resume Phase B
+    try {
+      await this.queueService.enqueueVideoBurnJob(id);   // resume Phase B
+    } catch (error: unknown) {
+      this.logger.error(`Failed to enqueue burn phase for VideoJob ${id}, rolling back to AWAITING_REVIEW`, error instanceof Error ? error.stack : error);
+      await this.translationService.rollbackToAwaitingReview(id).catch((err: unknown) => {
+        this.logger.error(`Failed to roll back VideoJob ${id}`, err);
+      });
+      throw new InternalServerErrorException('Không thể bắt đầu xử lý. Vui lòng thử lại.');
+    }
     return { success: true, job };
   }
 
@@ -255,11 +267,7 @@ export class TranslationController {
       const jobs = await this.translationService.getVideoJobs(userId);
       return { success: true, jobs };
     } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error
-          ? error.message
-          : 'Failed to retrieve video jobs';
-      return { success: false, error: errorMessage };
+      throw this.mapToHttpException(error);
     }
   }
 
@@ -318,5 +326,17 @@ export class TranslationController {
       `attachment; filename="${encodeURIComponent(fileName)}"`,
     );
     stream.pipe(res);
+  }
+
+  private mapToHttpException(error: unknown): HttpException {
+    if (error instanceof HttpException) return error;
+    if (error instanceof InsufficientCreditsError) {
+      return new HttpException(
+        { success: false, error: error.message, code: 'INSUFFICIENT_CREDITS' },
+        HttpStatus.PAYMENT_REQUIRED, // 402
+      );
+    }
+    const message = error instanceof Error ? error.message : 'Internal server error';
+    return new HttpException({ success: false, error: message }, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 }

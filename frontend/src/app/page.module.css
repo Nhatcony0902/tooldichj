@@ -305,9 +305,11 @@
 .badgeCompleted { background: rgba(16, 185, 129, 0.15); color: var(--success); }
 .badgeFailed { background: rgba(239, 68, 68, 0.15); color: var(--error); }
 .badgeCancelled { background: rgba(148, 163, 184, 0.12); color: var(--text-muted); }
+.badgeReview { background: rgba(251, 191, 36, 0.15); color: #f59e0b; }
 
 .jobCancelBtn,
-.jobDeleteBtn {
+.jobDeleteBtn,
+.jobReviewBtn {
   padding: 0.2rem 0.6rem;
   border-radius: 6px;
   font-size: 0.75rem;
@@ -327,6 +329,16 @@
   color: var(--error);
 }
 .jobDeleteBtn:hover { background: rgba(239, 68, 68, 0.12); }
+.jobReviewBtn {
+  border-color: rgba(99, 102, 241, 0.4);
+  color: var(--primary);
+}
+.jobReviewBtn:hover { background: rgba(99, 102, 241, 0.12); }
+.jobCancelBtn:disabled,
+.jobReviewBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 .progressBarBg {
   background: rgba(255, 255, 255, 0.05);
@@ -347,6 +359,86 @@
   color: var(--text-secondary);
   display: flex;
   justify-content: space-between;
+}
+
+/* Subtitle Review Panel */
+.reviewOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 100;
+}
+
+.reviewPanel {
+  width: 100%;
+  max-width: 720px;
+  max-height: 85vh;
+  background: var(--card-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--card-border);
+  border-radius: 20px;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.reviewTable {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+  margin-bottom: 1rem;
+}
+
+.reviewRow {
+  background: rgba(30, 41, 59, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.reviewOriginal {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+.reviewInput {
+  width: 100%;
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.reviewInput:focus {
+  border-color: var(--primary);
+}
+
+.reviewActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 /* History */

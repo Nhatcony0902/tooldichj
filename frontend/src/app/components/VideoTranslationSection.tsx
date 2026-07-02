@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import styles from "@/app/page.module.css";
-import { User, VideoJob } from "../types";
+import { SubtitleSegment, User, VideoJob } from "../types";
 
 // Mirrors backend's MAX_UPLOAD_MB (translation.controller.ts) — the backend
 // value is authoritative since multer enforces it. NEXT_PUBLIC_* is inlined
@@ -35,6 +35,12 @@ export default function VideoTranslationSection({
   const [removeSourceSubsVideo, setRemoveSourceSubsVideo] = useState(false);
   const [jobs, setJobs] = useState<VideoJob[]>([]);
 
+  // Subtitle review states
+  const [reviewJobId, setReviewJobId] = useState<string | null>(null);
+  const [reviewSegments, setReviewSegments] = useState<SubtitleSegment[]>([]);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewSaving, setReviewSaving] = useState(false);
+
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
   // Fetch danh sách các Video Jobs từ Backend
@@ -63,7 +69,7 @@ export default function VideoTranslationSection({
   // Polling để cập nhật tiến độ video job
   useEffect(() => {
     const hasActiveJobs = jobs.some(
-      (job) => job.status === "PENDING" || job.status === "PROCESSING"
+      (job) => job.status === "PENDING" || job.status === "PROCESSING" || job.status === "AWAITING_REVIEW"
     );
 
     if (token && hasActiveJobs) {
@@ -161,6 +167,79 @@ export default function VideoTranslationSection({
     }
   };
 
+  const openReview = async (jobId: string) => {
+    if (!token) return;
+    setReviewLoading(true);
+    setReviewJobId(jobId);
+    try {
+      const res = await fetch(`http://localhost:3001/translation/video-jobs/${jobId}/segments`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setReviewSegments(data.segments);
+      } else {
+        showToast("error", data.message || "Không tải được phụ đề.");
+        setReviewJobId(null);
+      }
+    } catch {
+      showToast("error", "Lỗi kết nối khi tải phụ đề.");
+      setReviewJobId(null);
+    } finally {
+      setReviewLoading(false);
+    }
+  };
+
+  const editSegment = (index: number, value: string) =>
+    setReviewSegments((prev) => prev.map((s) => (s.index === index ? { ...s, translatedText: value } : s)));
+
+  const saveDraft = async () => {
+    if (!token || !reviewJobId) return;
+    setReviewSaving(true);
+    try {
+      const res = await fetch(`http://localhost:3001/translation/video-jobs/${reviewJobId}/segments`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          segments: reviewSegments.map((s) => ({ index: s.index, translatedText: s.translatedText })),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showToast("success", "Đã lưu bản chỉnh sửa.");
+      } else {
+        showToast("error", data.message || "Không lưu được. Kiểm tra các dòng trống.");
+      }
+    } catch {
+      showToast("error", "Lỗi kết nối khi lưu.");
+    } finally {
+      setReviewSaving(false);
+    }
+  };
+
+  const confirmReview = async () => {
+    if (!token || !reviewJobId) return;
+    // save first so the burn uses the latest edits, then confirm
+    await saveDraft();
+    try {
+      const res = await fetch(`http://localhost:3001/translation/video-jobs/${reviewJobId}/confirm`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showToast("success", "Đã xác nhận — đang tạo video.");
+        setReviewJobId(null);
+        setReviewSegments([]);
+        await fetchJobs(token);
+      } else {
+        showToast("error", data.message || "Không xác nhận được.");
+      }
+    } catch {
+      showToast("error", "Lỗi kết nối khi xác nhận.");
+    }
+  };
+
   const handleDeleteJob = async (jobId: string) => {
     if (!token) return;
     if (!confirm("Xoá job này? Thao tác không thể hoàn tác.")) return;
@@ -200,6 +279,13 @@ export default function VideoTranslationSection({
         URL.revokeObjectURL(url);
       })
       .catch(() => showToast("error", "Chưa có file để tải"));
+  };
+
+  // Định dạng giây -> mm:ss cho bảng review (chỉ hiển thị, không chỉnh sửa)
+  const formatSegmentTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
   return (
@@ -333,6 +419,7 @@ export default function VideoTranslationSection({
                       {
                         PENDING: styles.badgePending,
                         PROCESSING: styles.badgeProcessing,
+                        AWAITING_REVIEW: styles.badgeReview,
                         COMPLETED: styles.badgeCompleted,
                         FAILED: styles.badgeFailed,
                         CANCELLED: styles.badgeCancelled,
@@ -343,6 +430,7 @@ export default function VideoTranslationSection({
                       {
                         PENDING: "Đang chờ",
                         PROCESSING: "Đang xử lý",
+                        AWAITING_REVIEW: "Chờ duyệt",
                         COMPLETED: "Hoàn tất",
                         FAILED: "Thất bại",
                         CANCELLED: "Đã huỷ",
@@ -411,6 +499,18 @@ export default function VideoTranslationSection({
                         Xoá
                       </button>
                     </div>
+                  ) : job.status === "AWAITING_REVIEW" ? (
+                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                      <button className={styles.jobReviewBtn} onClick={() => openReview(job.id)}>
+                        Kiểm tra & sửa phụ đề
+                      </button>
+                      <button
+                        className={styles.jobCancelBtn}
+                        onClick={() => handleCancelJob(job.id)}
+                      >
+                        Huỷ
+                      </button>
+                    </div>
                   ) : job.status === "PENDING" || job.status === "PROCESSING" ? (
                     <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
                       <span>Tiến trình: {job.progress}%</span>
@@ -438,6 +538,72 @@ export default function VideoTranslationSection({
           )}
         </div>
       </div>
+
+      {/* Panel duyệt & sửa phụ đề trước khi ghi hình */}
+      {reviewJobId && (
+        <div className={styles.reviewOverlay}>
+          <div className={styles.reviewPanel}>
+            <h3 style={{ fontSize: "1.1rem", fontWeight: "600", marginBottom: "0.25rem" }}>
+              Kiểm tra & sửa phụ đề
+            </h3>
+            <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", marginBottom: "1rem" }}>
+              Chỉnh sửa bản dịch trước khi tạo video. Thời gian & bản gốc chỉ để tham khảo.
+            </p>
+
+            {reviewLoading ? (
+              <div style={{ textAlign: "center", color: "var(--text-muted)", padding: "2rem" }}>
+                Đang tải phụ đề...
+              </div>
+            ) : (
+              <div className={styles.reviewTable}>
+                {reviewSegments.map((segment) => (
+                  <div key={segment.index} className={styles.reviewRow}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                      <span>#{segment.index + 1}</span>
+                      <span>
+                        {formatSegmentTime(segment.start)} → {formatSegmentTime(segment.end)}
+                      </span>
+                    </div>
+                    <p className={styles.reviewOriginal}>{segment.text}</p>
+                    <textarea
+                      className={styles.reviewInput}
+                      value={segment.translatedText}
+                      onChange={(e) => editSegment(segment.index, e.target.value)}
+                      rows={2}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className={styles.reviewActions}>
+              <button
+                className={styles.jobDeleteBtn}
+                onClick={() => {
+                  setReviewJobId(null);
+                  setReviewSegments([]);
+                }}
+              >
+                Đóng
+              </button>
+              <button
+                className={styles.jobCancelBtn}
+                onClick={saveDraft}
+                disabled={reviewSaving || reviewLoading}
+              >
+                Lưu nháp
+              </button>
+              <button
+                className={styles.translateButton}
+                onClick={confirmReview}
+                disabled={reviewSaving || reviewLoading}
+              >
+                Xác nhận & tạo video
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

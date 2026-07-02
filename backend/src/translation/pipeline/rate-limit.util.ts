@@ -30,6 +30,7 @@ export function isRateLimitError(err: unknown): boolean {
 export interface RetryOptions {
   maxAttempts?: number;
   baseDelayMs?: number;
+  retryable?: (err: unknown) => boolean; // extra retry condition, OR-ed with the rate-limit check
 }
 
 /**
@@ -67,7 +68,9 @@ export async function withRetry<T>(
           'Gemini API daily quota exhausted. Vui lòng kiểm tra plan/billing hoặc thử lại vào ngày mai.',
         );
       }
-      if (!isRateLimitError(err) || attempt === maxAttempts - 1) throw err;
+      const extra = opts.retryable?.(err) ?? false;
+      if ((!isRateLimitError(err) && !extra) || attempt === maxAttempts - 1)
+        throw err;
       const retryMs =
         parseGeminiRetryMs(err) ?? baseDelayMs * 2 ** attempt;
       await sleep(retryMs);

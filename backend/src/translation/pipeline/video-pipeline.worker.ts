@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { PrismaService } from '../../prisma.service';
 import { TranslationService } from '../translation.service';
+import { CreditService } from '../../credit/credit.service';
 import {
   STORAGE_PROVIDER,
   type IStorageProvider,
@@ -36,6 +37,7 @@ export class VideoPipelineWorker extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly translationService: TranslationService,
     @Inject(STORAGE_PROVIDER) private readonly storage: IStorageProvider,
+    private readonly creditService: CreditService,
   ) {
     super();
   }
@@ -123,27 +125,37 @@ export class VideoPipelineWorker extends WorkerHost {
         progress: 70,
         stepDescription: 'Đang dịch phụ đề bằng Gemini...',
       });
-      const translatedSegments = await translateSegments(
-        this.translationService,
-        videoJob.userId,
-        transcript.segments,
-        transcript.language,
-        videoJob.targetLang,
-        async (done, total) => {
-          const segProgress = 70 + Math.round((done / total) * 10);
-          await this.updateJob(jobId, {
-            progress: segProgress,
-            stepDescription: `Đang dịch phụ đề... (${done}/${total})`,
-          });
-        },
-      );
+      const { segments: translatedSegments, untranslatedCount } =
+        await translateSegments(
+          this.translationService,
+          videoJob.userId,
+          transcript.segments,
+          transcript.language,
+          videoJob.targetLang,
+          async (done, total) => {
+            const segProgress = 70 + Math.round((done / total) * 10);
+            await this.updateJob(jobId, {
+              progress: segProgress,
+              stepDescription: `Đang dịch phụ đề... (${done}/${total})`,
+            });
+          },
+        );
 
+      if (untranslatedCount > 0) {
+        this.logger.warn(
+          `VideoJob ${jobId}: ${untranslatedCount} segments could not be translated (left as source)`,
+        );
+      }
       await this.prisma.videoJob.update({
         where: { id: jobId },
         data: {
           translatedSegments: JSON.parse(
             JSON.stringify(translatedSegments),
           ) as Prisma.InputJsonValue,
+          // Written unconditionally (not just when > 0) so a BullMQ retry
+          // that produces a clean result resets a stale count from a prior
+          // failed attempt.
+          untranslatedSegmentCount: untranslatedCount,
         },
       });
       await this.updateJob(jobId, {
@@ -165,7 +177,8 @@ export class VideoPipelineWorker extends WorkerHost {
 
   /**
    * Phase B: rebuild SRT from the (possibly edited) stored segments ->
-   * optional blur -> burn-in -> save video -> COMPLETED + deduct 10 credits.
+   * optional blur -> burn-in -> save video -> COMPLETED. The 10-credit
+   * charge already happened at job creation (createVideoJob reserves it).
    */
   private async runBurnPhase(jobId: string): Promise<void> {
     const videoJob = await this.prisma.videoJob.findUnique({
@@ -181,6 +194,10 @@ export class VideoPipelineWorker extends WorkerHost {
       );
       return;
     }
+    if (videoJob.status === 'CANCELLED') {
+      this.logger.log(`VideoJob ${jobId} is CANCELLED, skipping burn phase`);
+      return;
+    }
     if (!videoJob.translatedSegments) {
       throw new Error(
         `VideoJob ${jobId} has no translatedSegments to resume from (not yet reviewed)`,
@@ -191,7 +208,10 @@ export class VideoPipelineWorker extends WorkerHost {
     }
 
     // Confirm endpoint already flips the status to PROCESSING; keep this
-    // idempotent in case the burn worker retries.
+    // idempotent in case the burn worker retries. Check cancellation BEFORE
+    // the overwrite so a job cancelled mid-burn is never resurrected to
+    // PROCESSING (and never charged).
+    await this.assertNotCancelled(jobId);
     await this.updateJob(jobId, {
       status: 'PROCESSING',
       progress: 86,
@@ -202,8 +222,6 @@ export class VideoPipelineWorker extends WorkerHost {
       path.join(os.tmpdir(), `videojob-${jobId}-burn-`),
     );
     try {
-      await this.assertNotCancelled(jobId);
-
       const stored = parseStoredSegments(videoJob.translatedSegments);
       const srtContent = buildSrt(stored);
       const srtKey = `outputs/${jobId}/subtitles.srt`;
@@ -231,12 +249,13 @@ export class VideoPipelineWorker extends WorkerHost {
       let videoStreamSourcePath = inputPath;
       if (outputModeIncludesBurn(outputMode)) {
         let burnSource = inputPath;
+        let pendingBlurStatus: string | undefined;
         if (videoJob.removeSourceSubs) {
           await this.updateJob(jobId, {
             progress: 88,
             stepDescription: 'Đang dò vị trí phụ đề gốc...',
           });
-          const region = await detectSubtitleRegion(
+          const { region, failedDueToError } = await detectSubtitleRegion(
             this.translationService.getAi(),
             inputPath,
             tmpDir,
@@ -249,13 +268,29 @@ export class VideoPipelineWorker extends WorkerHost {
             const blurredPath = path.join(tmpDir, 'blurred.mp4');
             await blurSubtitleArea(inputPath, blurredPath, region);
             burnSource = blurredPath;
-          } else {
+            pendingBlurStatus = 'applied';
+          } else if (failedDueToError) {
+            pendingBlurStatus = 'skipped_error';
             this.logger.warn(
+              `VideoJob ${jobId}: subtitle-region detection FAILED (API), blur skipped — original subtitles NOT removed despite request`,
+            );
+          } else {
+            pendingBlurStatus = 'skipped_no_subtitle';
+            this.logger.log(
               `VideoJob ${jobId}: no burned-in subtitle detected, skipping blur step`,
             );
           }
         }
+        // Cancellation check BEFORE persisting the degraded-state write, same
+        // guard used for the PROCESSING overwrite below (C1 pattern) — a job
+        // cancelled mid-detection must not have blurStatus written onto it.
         await this.assertNotCancelled(jobId);
+        if (pendingBlurStatus) {
+          await this.prisma.videoJob.update({
+            where: { id: jobId },
+            data: { blurStatus: pendingBlurStatus },
+          });
+        }
         await this.updateJob(jobId, {
           progress: 92,
           stepDescription: 'Đang chèn cứng phụ đề vào video...',
@@ -275,34 +310,26 @@ export class VideoPipelineWorker extends WorkerHost {
 
       const completionMessage = 'Hoàn tất! Phụ đề đã sẵn sàng tải xuống.';
 
-      await this.prisma.$transaction(async (tx) => {
-        // Atomic guard against double-processing (concurrent worker retry,
-        // duplicate enqueue): only the update that actually flips status
-        // away from COMPLETED deducts credits. A second concurrent run
-        // matches 0 rows and skips the charge entirely.
-        const result = await tx.videoJob.updateMany({
-          where: { id: jobId, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
-          data: {
-            status: 'COMPLETED',
-            progress: 100,
-            stepDescription: completionMessage,
-            subtitlesUrl: srtKey,
-            outputVideoUrl: outputVideoKey,
-            outputAudioUrl: null,
-            errorMessage: null,
-          },
-        });
-        if (result.count === 0) {
-          this.logger.warn(
-            `VideoJob ${jobId} was already completed by a concurrent run; skipping duplicate credit deduction`,
-          );
-          return;
-        }
-        await tx.user.update({
-          where: { id: videoJob.userId },
-          data: { credits: { decrement: 10 } },
-        });
+      // Atomic guard against double-processing (concurrent worker retry,
+      // duplicate enqueue): the 10-credit charge already happened at job
+      // creation (createVideoJob reserves it), so this only flips status.
+      const result = await this.prisma.videoJob.updateMany({
+        where: { id: jobId, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+        data: {
+          status: 'COMPLETED',
+          progress: 100,
+          stepDescription: completionMessage,
+          subtitlesUrl: srtKey,
+          outputVideoUrl: outputVideoKey,
+          outputAudioUrl: null,
+          errorMessage: null,
+        },
       });
+      if (result.count === 0) {
+        this.logger.warn(
+          `VideoJob ${jobId} was already completed by a concurrent run; skipping duplicate update`,
+        );
+      }
 
       this.logger.log(`VideoJob ${jobId} completed`);
     } finally {
@@ -334,14 +361,27 @@ export class VideoPipelineWorker extends WorkerHost {
     );
     if (error.message === 'JOB_CANCELLED') return;
     const friendlyMessage = this.buildFriendlyErrorMessage(error);
-    await this.prisma.videoJob
-      .updateMany({
+    let result: { count: number } = { count: 0 };
+    try {
+      result = await this.prisma.videoJob.updateMany({
         where: { id: job.data.jobId, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
         data: { status: 'FAILED', errorMessage: friendlyMessage },
-      })
-      .catch((err: unknown) =>
-        this.logger.error('Failed to persist FAILED status', err),
-      );
+      });
+    } catch (err) {
+      this.logger.error('Failed to persist FAILED status', err);
+      return;
+    }
+    // Exactly-once: only refund when this call actually flipped the status
+    // to FAILED (a concurrent cancel/complete would make count === 0).
+    if (result.count > 0) {
+      const failedJob = await this.prisma.videoJob.findUnique({
+        where: { id: job.data.jobId },
+        select: { userId: true },
+      });
+      if (failedJob) {
+        await this.creditService.refundCredit(failedJob.userId, 10);
+      }
+    }
   }
 
   private async assertNotCancelled(jobId: string): Promise<void> {

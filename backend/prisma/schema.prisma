@@ -77,6 +77,8 @@ model VideoJob {
   outputMode      String   @default("burn") // srt | burn
   removeSourceSubs Boolean  @default(false)
   errorMessage     String?
+  untranslatedSegmentCount Int     @default(0) // segments left as source text after retries exhausted (B1)
+  blurStatus               String? // null=not requested | 'applied' | 'skipped_no_subtitle' | 'skipped_error' (B2)
   subtitlesUrl    String?
   outputVideoUrl  String?
   outputAudioUrl  String?

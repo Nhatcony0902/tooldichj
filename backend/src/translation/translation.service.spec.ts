@@ -1,8 +1,8 @@
 import { TranslationService } from './translation.service';
 
 function buildService(opts: { ai: any } = { ai: null }) {
-  const prisma = {
-    user: { findUnique: jest.fn() },
+  const prisma: any = {
+    user: { findUnique: jest.fn(), updateMany: jest.fn() },
     translationCache: {
       findUnique: jest.fn(),
       create: jest.fn(),
@@ -17,10 +17,16 @@ function buildService(opts: { ai: any } = { ai: null }) {
       create: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      updateMany: jest.fn(),
     },
   };
+  // createVideoJob runs its reserve+create inside prisma.$transaction; the
+  // mock just invokes the callback with the same prisma double as `tx`.
+  prisma.$transaction = jest.fn((fn: (tx: any) => unknown) => fn(prisma));
   const creditService = {
     deductCredit: jest.fn().mockResolvedValue(undefined),
+    reserveCredit: jest.fn().mockResolvedValue(undefined),
+    refundCredit: jest.fn().mockResolvedValue(undefined),
   };
   const geminiClient = {
     getHash: jest.fn((text: string) => `hash:${text}`),
@@ -542,9 +548,9 @@ describe('TranslationService', () => {
   });
 
   describe('createVideoJob', () => {
-    it('rejects when the user has fewer than 10 credits', async () => {
+    it('rejects when the user has fewer than 10 credits (atomic reserve matches 0 rows)', async () => {
       const { service, prisma } = buildService();
-      prisma.user.findUnique.mockResolvedValue({ credits: 9 });
+      prisma.user.updateMany.mockResolvedValue({ count: 0 });
 
       await expect(
         service.createVideoJob('u1', {
@@ -554,11 +560,12 @@ describe('TranslationService', () => {
           outputMode: 'burn',
         }),
       ).rejects.toThrow(/10 credits/);
+      expect(prisma.videoJob.create).not.toHaveBeenCalled();
     });
 
-    it('creates a PENDING job when the user has enough credits', async () => {
+    it('creates a PENDING job when the user has enough credits, reserving 10 credits atomically', async () => {
       const { service, prisma } = buildService();
-      prisma.user.findUnique.mockResolvedValue({ credits: 10 });
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
       prisma.videoJob.create.mockResolvedValue({
         id: 'job1',
         status: 'PENDING',
@@ -572,9 +579,127 @@ describe('TranslationService', () => {
       });
 
       expect(job.status).toBe('PENDING');
+      expect(prisma.user.updateMany).toHaveBeenCalledWith({
+        where: { id: 'u1', credits: { gte: 10 } },
+        data: { credits: { decrement: 10 } },
+      });
       expect(prisma.videoJob.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ status: 'PENDING', progress: 0 }),
       });
+    });
+
+    it('2 concurrent createVideoJob calls against a balance of 10: exactly 1 succeeds, the other throws, final balance is 0', async () => {
+      const { service, prisma } = buildService();
+      let credits = 10;
+      prisma.user.updateMany.mockImplementation(
+        async ({ where, data }: any) => {
+          if (credits >= where.credits.gte) {
+            credits -= data.credits.decrement;
+            return { count: 1 };
+          }
+          return { count: 0 };
+        },
+      );
+      prisma.videoJob.create.mockImplementation(async ({ data }: any) => ({
+        id: 'job-x',
+        ...data,
+      }));
+
+      const params = {
+        fileName: 'a.mp4',
+        inputStorageKey: 'k',
+        targetLang: 'vi',
+        outputMode: 'burn',
+      };
+      const results = await Promise.allSettled([
+        service.createVideoJob('u1', params),
+        service.createVideoJob('u1', params),
+      ]);
+
+      const succeeded = results.filter((r) => r.status === 'fulfilled');
+      const failed = results.filter((r) => r.status === 'rejected');
+      expect(succeeded).toHaveLength(1);
+      expect(failed).toHaveLength(1);
+      expect((failed[0] as PromiseRejectedResult).reason.message).toMatch(
+        /10 credits/,
+      );
+      expect(credits).toBe(0);
+    });
+  });
+
+  describe('cancelVideoJob', () => {
+    it('refunds 10 credits exactly once when it successfully cancels a PROCESSING job', async () => {
+      const { service, prisma, creditService } = buildService();
+      prisma.videoJob.findUnique
+        .mockResolvedValueOnce({ id: 'job1', userId: 'u1', status: 'PROCESSING' })
+        .mockResolvedValueOnce({ id: 'job1', userId: 'u1', status: 'CANCELLED' });
+      prisma.videoJob.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.cancelVideoJob('u1', 'job1');
+
+      expect(creditService.refundCredit).toHaveBeenCalledTimes(1);
+      expect(creditService.refundCredit).toHaveBeenCalledWith('u1', 10);
+    });
+
+    it('does not refund when the job has already changed state (updateMany matches 0 rows)', async () => {
+      const { service, prisma, creditService } = buildService();
+      prisma.videoJob.findUnique.mockResolvedValue({
+        id: 'job1',
+        userId: 'u1',
+        status: 'PROCESSING',
+      });
+      prisma.videoJob.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.cancelVideoJob('u1', 'job1')).rejects.toThrow();
+      expect(creditService.refundCredit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('failOrphanedVideoJob', () => {
+    it('flips PENDING -> FAILED and refunds 10 credits exactly once', async () => {
+      const { service, prisma, creditService } = buildService();
+      prisma.videoJob.updateMany.mockResolvedValue({ count: 1 });
+      prisma.videoJob.findUnique.mockResolvedValue({ id: 'job1', userId: 'u1', status: 'FAILED' });
+
+      await service.failOrphanedVideoJob('job1');
+
+      expect(prisma.videoJob.updateMany).toHaveBeenCalledWith({
+        where: { id: 'job1', status: 'PENDING' },
+        data: expect.objectContaining({ status: 'FAILED' }),
+      });
+      expect(creditService.refundCredit).toHaveBeenCalledTimes(1);
+      expect(creditService.refundCredit).toHaveBeenCalledWith('u1', 10);
+    });
+
+    it('does not refund when the job already changed state (updateMany matches 0 rows)', async () => {
+      const { service, prisma, creditService } = buildService();
+      prisma.videoJob.updateMany.mockResolvedValue({ count: 0 });
+
+      await service.failOrphanedVideoJob('job1');
+
+      expect(creditService.refundCredit).not.toHaveBeenCalled();
+      expect(prisma.videoJob.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('rollbackToAwaitingReview', () => {
+    it('flips PROCESSING -> AWAITING_REVIEW so a retried confirm can succeed', async () => {
+      const { service, prisma } = buildService();
+      prisma.videoJob.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.rollbackToAwaitingReview('job1');
+
+      expect(prisma.videoJob.updateMany).toHaveBeenCalledWith({
+        where: { id: 'job1', status: 'PROCESSING' },
+        data: { status: 'AWAITING_REVIEW' },
+      });
+    });
+
+    it('no-ops (does not throw) when a concurrent duplicate confirm already changed the state', async () => {
+      const { service, prisma } = buildService();
+      prisma.videoJob.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.rollbackToAwaitingReview('job1')).resolves.toBeUndefined();
     });
   });
 });

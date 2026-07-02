@@ -193,8 +193,8 @@ export default function VideoTranslationSection({
   const editSegment = (index: number, value: string) =>
     setReviewSegments((prev) => prev.map((s) => (s.index === index ? { ...s, translatedText: value } : s)));
 
-  const saveDraft = async () => {
-    if (!token || !reviewJobId) return;
+  const saveDraft = async (): Promise<boolean> => {
+    if (!token || !reviewJobId) return false;
     setReviewSaving(true);
     try {
       const res = await fetch(`http://localhost:3001/translation/video-jobs/${reviewJobId}/segments`, {
@@ -207,11 +207,13 @@ export default function VideoTranslationSection({
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         showToast("success", "Đã lưu bản chỉnh sửa.");
-      } else {
-        showToast("error", data.message || "Không lưu được. Kiểm tra các dòng trống.");
+        return true;
       }
+      showToast("error", data.message || "Không lưu được. Kiểm tra các dòng trống.");
+      return false;
     } catch {
       showToast("error", "Lỗi kết nối khi lưu.");
+      return false;
     } finally {
       setReviewSaving(false);
     }
@@ -219,8 +221,9 @@ export default function VideoTranslationSection({
 
   const confirmReview = async () => {
     if (!token || !reviewJobId) return;
-    // save first so the burn uses the latest edits, then confirm
-    await saveDraft();
+    // save first so the burn uses the latest edits — abort confirm if the save failed
+    const saved = await saveDraft();
+    if (!saved) return;
     try {
       const res = await fetch(`http://localhost:3001/translation/video-jobs/${reviewJobId}/confirm`, {
         method: "POST",
@@ -452,6 +455,16 @@ export default function VideoTranslationSection({
                   {job.status === "FAILED" ? job.errorMessage || job.stepDescription : job.stepDescription}
                 </p>
 
+                {job.status === "COMPLETED" && (job.untranslatedSegmentCount ?? 0) > 0 && (
+                  <p style={{ color: "var(--warning)", fontSize: "0.85rem", margin: "0.25rem 0" }}>
+                    ⚠ {job.untranslatedSegmentCount} câu chưa dịch được và đang giữ nguyên ngôn ngữ gốc.
+                  </p>
+                )}
+                {job.status === "COMPLETED" && job.blurStatus === "skipped_error" && (
+                  <p style={{ color: "var(--warning)", fontSize: "0.85rem", margin: "0.25rem 0" }}>
+                    ⚠ Không thể làm mờ phụ đề gốc (lỗi tạm thời của dịch vụ). Phụ đề gốc vẫn còn trong video.
+                  </p>
+                )}
                 <div className={styles.jobDetails}>
                   <span>Mục tiêu: {job.targetLang.toUpperCase()}</span>
                   {job.status === "COMPLETED" ? (

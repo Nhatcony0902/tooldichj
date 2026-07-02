@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common';
+import { IncompleteTranslationError } from './incomplete-translation.error';
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_TRANSLATE_MODEL = 'llama-3.3-70b-versatile';
@@ -80,14 +81,21 @@ ${JSON.stringify(texts)}`;
     );
   }
 
-  if (translations.length === texts.length) {
-    return translations as string[];
-  }
+  const arr = translations as string[];
+  // An item only counts as "incomplete" when its SOURCE text had actual
+  // content — a genuinely empty/whitespace source segment legitimately
+  // translates to an empty string.
+  const complete =
+    arr.length === texts.length &&
+    arr.every((t, i) => t.trim().length > 0 || !texts[i].trim());
+  if (complete) return arr;
 
-  // Length mismatch: pad/trim to preserve subtitle alignment.
-  // Mirrors the same safety logic used by the Gemini fallback.
+  // Incomplete: length mismatch or an empty item. Let the caller retry the
+  // whole batch (withRetry + isIncompleteTranslationError) instead of
+  // silently padding with source text here — see rate-limit.util.ts.
   logger.warn(
-    `Groq translate length mismatch: expected ${texts.length}, got ${translations.length}. Padding/trimming.`,
+    `Groq translate incomplete: expected ${texts.length}, got ${arr.length} usable items. Will retry.`,
   );
-  return texts.map((orig, i) => (translations as string[])[i] ?? orig);
+  const partial = texts.map((_, i) => (arr[i]?.trim() ? arr[i] : ''));
+  throw new IncompleteTranslationError(partial, texts.length);
 }

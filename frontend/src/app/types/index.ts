@@ -10,7 +10,7 @@ export interface TranslationHistory {
 export interface VideoJob {
   id: string;
   fileName: string;
-  status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "CANCELLED";
+  status: "PENDING" | "PROCESSING" | "AWAITING_REVIEW" | "COMPLETED" | "FAILED" | "CANCELLED";
   progress: number;
   stepDescription: string;
   targetLang: string;
@@ -20,6 +20,14 @@ export interface VideoJob {
   outputAudioUrl?: string | null;
   errorMessage?: string;
   createdAt: string;
+}
+
+export interface SubtitleSegment {
+  index: number;
+  start: number;
+  end: number;
+  text: string; // original (read-only)
+  translatedText: string; // editable
 }
 
 export interface User {

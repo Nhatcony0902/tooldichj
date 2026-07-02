@@ -83,6 +83,53 @@ export async function translateSegments(
   }));
 }
 
+// Parse/validate a stored translatedSegments JSON blob back into typed segments.
+export function parseStoredSegments(value: unknown): TranslatedSegment[] {
+  if (!Array.isArray(value)) {
+    throw new Error('translatedSegments is not an array');
+  }
+  return value.map((s, i) => {
+    const seg = s as Partial<TranslatedSegment>;
+    if (
+      typeof seg.start !== 'number' ||
+      typeof seg.end !== 'number' ||
+      typeof seg.text !== 'string' ||
+      typeof seg.translatedText !== 'string'
+    ) {
+      throw new Error(`Stored segment ${i} has an invalid shape`);
+    }
+    return { start: seg.start, end: seg.end, text: seg.text, translatedText: seg.translatedText };
+  });
+}
+
+// Validate a user-supplied edit set against the stored segments (MVP: translatedText only).
+// Returns the merged segment array (stored timing/original text preserved; only translatedText overwritten).
+export function applySegmentEdits(
+  stored: TranslatedSegment[],
+  edits: { index: number; translatedText: string }[],
+): TranslatedSegment[] {
+  if (!Array.isArray(edits) || edits.length !== stored.length) {
+    throw new Error('Edit set length does not match stored segments');
+  }
+  const merged = stored.map((s) => ({ ...s }));
+  const seen = new Set<number>();
+  for (const e of edits) {
+    if (
+      typeof e.index !== 'number' ||
+      e.index < 0 ||
+      e.index >= merged.length ||
+      seen.has(e.index) ||
+      typeof e.translatedText !== 'string' ||
+      e.translatedText.trim().length === 0
+    ) {
+      throw new Error(`Invalid edit for segment index ${e?.index}`);
+    }
+    seen.add(e.index);
+    merged[e.index].translatedText = e.translatedText;
+  }
+  return merged;
+}
+
 export function buildSrt(segments: TranslatedSegment[]): string {
   const expanded = segments.flatMap((s) => splitLongSegment(s));
   return expanded

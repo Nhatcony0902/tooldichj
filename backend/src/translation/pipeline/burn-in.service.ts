@@ -1,5 +1,6 @@
 import ffmpeg from 'fluent-ffmpeg';
 import * as path from 'path';
+import type { SubtitleRegion } from './subtitle-region.service';
 
 // Netflix/YouTube style: small font in an opaque box, bottom-center.
 // PlayResY=288 anchors FontSize units; FontSize=14 → 14/288 ≈ 4.9% of frame height.
@@ -42,21 +43,24 @@ export function burnInSubtitles(
 }
 
 /**
- * Blur the bottom 20% of every frame to obscure pre-existing burned-in
- * subtitles before overlaying new ones. Opt-in feature (Phase 3).
- * Uses split→crop→boxblur→overlay filtergraph (standard FFmpeg region blur).
+ * Blur the detected subtitle region of every frame to obscure pre-existing
+ * burned-in subtitles before overlaying new ones. Opt-in feature; the region
+ * is detected per-video by subtitle-region.service (Gemini vision), not a
+ * fixed guess. Uses split→crop→boxblur→overlay filtergraph (standard FFmpeg
+ * region blur).
  */
 export function blurSubtitleArea(
   inputVideoPath: string,
   outputVideoPath: string,
+  region: SubtitleRegion,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    // split the video into two copies; blur the bottom-20% of one; overlay it back
+    // split the video into two copies; blur the detected band of one; overlay it back
     const complexFilter = [
       'split[a][b]',
-      '[b]crop=iw:ih*0.2:0:ih*0.8[cropped]',
+      `[b]crop=iw:ih*${region.heightRatio}:0:ih*${region.yRatio}[cropped]`,
       '[cropped]boxblur=20:2[blurred]',
-      '[a][blurred]overlay=0:H*0.8[out]',
+      `[a][blurred]overlay=0:H*${region.yRatio}[out]`,
     ].join(';');
     ffmpeg(inputVideoPath)
       .complexFilter(complexFilter, 'out')

@@ -70,18 +70,18 @@ model VideoJob {
   id              String   @id @default(uuid())
   fileName        String
   inputStorageKey String?
-  status          String // PENDING, PROCESSING, COMPLETED, FAILED
+  status          String // PENDING, PROCESSING, AWAITING_REVIEW, COMPLETED, FAILED, CANCELLED
   progress        Int      @default(0)
   stepDescription String   @default("Đang chờ...")
   targetLang      String   @default("vi")
-  outputMode      String   @default("burn") // srt | burn | dub | burn+dub
-  dubVoiceId       String?
+  outputMode      String   @default("burn") // srt | burn
   removeSourceSubs Boolean  @default(false)
   errorMessage     String?
   subtitlesUrl    String?
   outputVideoUrl  String?
   outputAudioUrl  String?
   transcript      Json?
+  translatedSegments Json?   // [{ start, end, text, translatedText }] — persisted at AWAITING_REVIEW for the review/edit checkpoint
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   userId          String

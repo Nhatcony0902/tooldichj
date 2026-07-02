@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Delete,
   Body,
   Param,
@@ -24,17 +25,13 @@ import { TranslationService } from './translation.service';
 import { QueueService } from './queue.service';
 import { TranslateDto } from './dto/translate.dto';
 import { CreateVideoJobDto } from './dto/create-video-job.dto';
+import type { UpdateSegmentsDto } from './dto/update-segments.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import {
   STORAGE_PROVIDER,
   type IStorageProvider,
 } from '../storage/storage.interface';
-import {
-  OUTPUT_MODES,
-  isValidOutputMode,
-  outputModeIncludesDub,
-} from './pipeline/output-mode';
-import { isValidVoiceId } from '../tts/voices.config';
+import { OUTPUT_MODES, isValidOutputMode } from './pipeline/output-mode';
 import { InsufficientCreditsError } from '../credit/insufficient-credits.error';
 
 interface RequestWithUser {
@@ -151,14 +148,6 @@ export class TranslationController {
         `Invalid outputMode "${outputMode}". Must be one of: ${OUTPUT_MODES.join(', ')}`,
       );
     }
-    if (outputModeIncludesDub(outputMode)) {
-      if (!dto.dubVoiceId || !isValidVoiceId(dto.dubVoiceId)) {
-        throw new BadRequestException(
-          'A valid dubVoiceId is required when outputMode includes dubbing',
-        );
-      }
-    }
-
     try {
       // basename() strips any directory components a crafted originalname
       // could carry (e.g. "../../etc/passwd"), so the storage key can never
@@ -173,7 +162,6 @@ export class TranslationController {
         inputStorageKey: storageKey,
         targetLang: dto.targetLang,
         outputMode,
-        dubVoiceId: outputModeIncludesDub(outputMode) ? dto.dubVoiceId : null,
         removeSourceSubs,
       });
       await this.queueService.enqueueVideoJob(job.id);
@@ -210,6 +198,35 @@ export class TranslationController {
     @Request() req: RequestWithUser,
   ) {
     const job = await this.translationService.cancelVideoJob(req.user.id, id);
+    return { success: true, job };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('video-jobs/:id/segments')
+  async getSegments(@Param('id') id: string, @Request() req: RequestWithUser) {
+    const segments = await this.translationService.getReviewSegments(req.user.id, id);
+    return { success: true, segments };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('video-jobs/:id/segments')
+  async saveSegments(
+    @Param('id') id: string,
+    @Body() dto: UpdateSegmentsDto,
+    @Request() req: RequestWithUser,
+  ) {
+    if (!dto || !Array.isArray(dto.segments)) {
+      throw new BadRequestException('Danh sách phụ đề không hợp lệ');
+    }
+    await this.translationService.saveReviewSegments(req.user.id, id, dto.segments);
+    return { success: true };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('video-jobs/:id/confirm')
+  async confirmJob(@Param('id') id: string, @Request() req: RequestWithUser) {
+    const job = await this.translationService.confirmVideoJob(req.user.id, id);
+    await this.queueService.enqueueVideoBurnJob(id);   // resume Phase B
     return { success: true, job };
   }
 

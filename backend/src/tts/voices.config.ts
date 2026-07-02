@@ -15,5 +15,3 @@ const VOICE_IDS = new Set(VOICE_CATALOG.map((v) => v.id));
 export function isValidVoiceId(voiceId: string): boolean {
   return VOICE_IDS.has(voiceId);
 }
-
-export const DEFAULT_VOICE_ID = 'vi-VN-HoaiMyNeural';

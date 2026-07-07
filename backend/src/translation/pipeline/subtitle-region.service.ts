@@ -37,11 +37,36 @@ export interface SubtitleRegionResult {
 
 const logger = new Logger('subtitle-region');
 
-// Sample a few frames across the video; a burned-in subtitle track is only
-// present during speech, so a single frame can miss it.
+// Fallback sampling: a few frames at fixed fractions of the video. Used only
+// when no speech timing is available — a burned-in subtitle is present during
+// speech, so fixed fractions can land on silent/no-text frames and miss it.
 const SAMPLE_POSITIONS = [0.2, 0.5, 0.8]; // fractions of video duration
 const FRAME_WIDTH = 640; // downscale to cut Gemini tokens/latency
 const REGION_PADDING = 0.02; // grow the union slightly so jitter never clips text
+// Cap on frames sampled for detection — each is a Gemini vision call, so keep
+// it bounded even for long videos with many speech segments.
+const MAX_REGION_SAMPLES = 6;
+
+/**
+ * Choose up to `max` timestamps (seconds) at the MIDDLE of speech segments —
+ * moments a burned-in subtitle is guaranteed to be on screen. Evenly spreads
+ * the picks across the segment list so samples cover the whole video. Pass the
+ * result to detectSubtitleRegion so it samples where text actually appears
+ * instead of fixed duration fractions.
+ */
+export function pickSpeechSampleTimestamps(
+  segments: { start: number; end: number }[],
+  max: number = MAX_REGION_SAMPLES,
+): number[] {
+  const mids = segments.map((s) => (s.start + s.end) / 2).filter((t) => t > 0);
+  if (mids.length <= max) return mids;
+  const step = mids.length / max;
+  const picked: number[] = [];
+  for (let i = 0; i < max; i += 1) {
+    picked.push(mids[Math.floor(i * step)]);
+  }
+  return picked;
+}
 
 interface RegionDetectionResult {
   found: boolean;
@@ -60,15 +85,24 @@ export async function detectSubtitleRegion(
   ai: GoogleGenAI | null,
   videoPath: string,
   tmpDir: string,
+  sampleTimestamps?: number[],
 ): Promise<SubtitleRegionResult> {
   if (!ai) return { region: null, failedDueToError: false }; // no GEMINI_API_KEY — caller skips blur (legit, quiet)
 
-  const duration = await getAudioDuration(videoPath);
-  if (!duration || duration <= 0) return { region: null, failedDueToError: false };
-
-  const timestamps = SAMPLE_POSITIONS.map((f) => duration * f).filter(
-    (t) => t > 0,
-  );
+  // Prefer caller-supplied speech-aligned timestamps (frames where a subtitle
+  // is actually on screen). Fall back to fixed duration fractions only when no
+  // speech timing is available.
+  let timestamps: number[];
+  if (sampleTimestamps && sampleTimestamps.length > 0) {
+    timestamps = sampleTimestamps.filter((t) => t > 0);
+  } else {
+    const duration = await getAudioDuration(videoPath);
+    if (!duration || duration <= 0)
+      return { region: null, failedDueToError: false };
+    timestamps = SAMPLE_POSITIONS.map((f) => duration * f).filter((t) => t > 0);
+  }
+  if (timestamps.length === 0)
+    return { region: null, failedDueToError: false };
   const regions: SubtitleRegion[] = [];
   let sawApiError = false;
 

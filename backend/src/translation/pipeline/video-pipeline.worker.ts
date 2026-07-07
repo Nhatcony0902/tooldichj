@@ -16,8 +16,11 @@ import { VIDEO_PIPELINE_QUEUE } from '../../queue/queue.module';
 import { extractAudio } from './audio-extractor';
 import { transcribeAudio } from './stt.service';
 import { translateSegments, buildSrt, parseStoredSegments } from './subtitle.service';
-import { burnInSubtitles, blurSubtitleArea } from './burn-in.service';
-import { detectSubtitleRegion } from './subtitle-region.service';
+import { burnInSubtitles, coverSubtitleArea } from './burn-in.service';
+import {
+  detectSubtitleRegion,
+  pickSpeechSampleTimestamps,
+} from './subtitle-region.service';
 import {
   isValidOutputMode,
   outputModeIncludesBurn,
@@ -255,19 +258,24 @@ export class VideoPipelineWorker extends WorkerHost {
             progress: 88,
             stepDescription: 'Đang dò vị trí phụ đề gốc...',
           });
+          // Sample detection frames during actual speech (the subtitle is on
+          // screen then) instead of fixed duration fractions, which can land on
+          // no-text frames and miss a subtitle that is really there.
+          const speechTimestamps = pickSpeechSampleTimestamps(stored);
           const { region, failedDueToError } = await detectSubtitleRegion(
             this.translationService.getAi(),
             inputPath,
             tmpDir,
+            speechTimestamps,
           );
           if (region) {
             await this.updateJob(jobId, {
               progress: 90,
-              stepDescription: 'Đang làm mờ phụ đề gốc...',
+              stepDescription: 'Đang che phụ đề gốc...',
             });
-            const blurredPath = path.join(tmpDir, 'blurred.mp4');
-            await blurSubtitleArea(inputPath, blurredPath, region);
-            burnSource = blurredPath;
+            const coveredPath = path.join(tmpDir, 'covered.mp4');
+            await coverSubtitleArea(inputPath, coveredPath, region);
+            burnSource = coveredPath;
             pendingBlurStatus = 'applied';
           } else if (failedDueToError) {
             pendingBlurStatus = 'skipped_error';

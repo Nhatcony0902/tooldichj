@@ -373,6 +373,8 @@ export default function VideoTranslationSection({
               >
                 <option value="burn">Chèn sub vào Video</option>
                 <option value="srt">Chỉ xuất file .SRT</option>
+                <option value="dub">Lồng tiếng (giữ tiếng gốc nhỏ)</option>
+                <option value="burn+dub">Chèn sub + Lồng tiếng</option>
               </select>
             </div>
           </div>

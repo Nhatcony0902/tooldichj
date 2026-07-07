@@ -22,6 +22,7 @@ function buildWorker() {
     {} as any, // translationService — unused by onFailed
     {} as any, // storage — unused by onFailed
     creditService as any,
+    {} as any, // ttsService — unused by onFailed
   );
   return { worker, prisma, creditService };
 }
@@ -166,6 +167,7 @@ describe('Cross-path exactly-once refund (R2 gate): cancel vs permanent failure 
       {} as any,
       {} as any,
       creditService,
+      {} as any, // ttsService — unused by these paths
     );
 
     return {

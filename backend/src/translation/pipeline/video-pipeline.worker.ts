@@ -24,8 +24,13 @@ import {
 import {
   isValidOutputMode,
   outputModeIncludesBurn,
+  outputModeIncludesDub,
   outputModeProducesVideo,
 } from './output-mode';
+import { buildDubbingTrack } from './dubbing.service';
+import { muxVideoWithDubTrack } from './mux.service';
+import { TtsService } from '../../tts/tts.service';
+import { DEFAULT_VOICE_ID } from '../../tts/voices.config';
 
 interface VideoPipelineJobData {
   jobId: string;
@@ -41,6 +46,7 @@ export class VideoPipelineWorker extends WorkerHost {
     private readonly translationService: TranslationService,
     @Inject(STORAGE_PROVIDER) private readonly storage: IStorageProvider,
     private readonly creditService: CreditService,
+    private readonly ttsService: TtsService,
   ) {
     super();
   }
@@ -248,6 +254,7 @@ export class VideoPipelineWorker extends WorkerHost {
       }
       const outputMode = videoJob.outputMode;
       let outputVideoKey: string | null = null;
+      let outputAudioKey: string | null = null;
 
       let videoStreamSourcePath = inputPath;
       if (outputModeIncludesBurn(outputMode)) {
@@ -310,6 +317,39 @@ export class VideoPipelineWorker extends WorkerHost {
         videoStreamSourcePath = burnedVideoPath;
       }
 
+      if (outputModeIncludesDub(outputMode)) {
+        await this.assertNotCancelled(jobId);
+        await this.updateJob(jobId, {
+          progress: 94,
+          stepDescription: 'Đang tạo lồng tiếng...',
+        });
+        const { audioPath: dubPath, driftSeconds } = await buildDubbingTrack(
+          this.ttsService,
+          videoJob.userId,
+          stored,
+          DEFAULT_VOICE_ID,
+          tmpDir,
+        );
+        if (driftSeconds > 1) {
+          this.logger.warn(
+            `VideoJob ${jobId}: dub track ran up to ${driftSeconds.toFixed(2)}s behind its subtitle anchors`,
+          );
+        }
+        await this.updateJob(jobId, {
+          progress: 96,
+          stepDescription: 'Đang trộn tiếng lồng vào video...',
+        });
+        const dubbedVideoPath = path.join(tmpDir, 'dubbed.mp4');
+        await muxVideoWithDubTrack(
+          videoStreamSourcePath,
+          dubPath,
+          dubbedVideoPath,
+        );
+        videoStreamSourcePath = dubbedVideoPath;
+        outputAudioKey = `outputs/${jobId}/dub-audio.mp3`;
+        await this.storage.save(await fs.readFile(dubPath), outputAudioKey);
+      }
+
       if (outputModeProducesVideo(outputMode)) {
         const outputVideoBuffer = await fs.readFile(videoStreamSourcePath);
         outputVideoKey = `outputs/${jobId}/video.mp4`;
@@ -329,7 +369,7 @@ export class VideoPipelineWorker extends WorkerHost {
           stepDescription: completionMessage,
           subtitlesUrl: srtKey,
           outputVideoUrl: outputVideoKey,
-          outputAudioUrl: null,
+          outputAudioUrl: outputAudioKey,
           errorMessage: null,
         },
       });

@@ -2,20 +2,6 @@ import ffmpeg from 'fluent-ffmpeg';
 import * as path from 'path';
 import type { SubtitleRegion } from './subtitle-region.service';
 
-const MAX_BLUR_RADIUS = 20;
-
-function probeVideoHeight(inputVideoPath: string): Promise<number> {
-  return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(inputVideoPath, (err, data) => {
-      if (err) return reject(err);
-      const videoStream = data.streams.find((s) => s.codec_type === 'video');
-      if (!videoStream?.height)
-        return reject(new Error('Could not determine video height'));
-      resolve(videoStream.height);
-    });
-  });
-}
-
 // Netflix/YouTube style: small font in an opaque box, bottom-center.
 // PlayResY=288 anchors FontSize units; FontSize=14 → 14/288 ≈ 4.9% of frame height.
 // BorderStyle=3: opaque box background. BackColour=&H66000000: 60% opacity black (ASS AABBGGRR).
@@ -57,36 +43,26 @@ export function burnInSubtitles(
 }
 
 /**
- * Blur the detected subtitle region of every frame to obscure pre-existing
- * burned-in subtitles before overlaying new ones. Opt-in feature; the region
- * is detected per-video by subtitle-region.service (Gemini vision), not a
- * fixed guess. Uses split→crop→boxblur→overlay filtergraph (standard FFmpeg
- * region blur).
+ * Cover the detected subtitle band with an opaque filled box to hide
+ * pre-existing burned-in subtitles before overlaying new ones. Opt-in feature;
+ * the region is detected per-video by subtitle-region.service (Gemini vision),
+ * not a fixed guess.
+ *
+ * A boxblur leaves large hardcoded subtitle text readable through the blur, so
+ * we draw a solid box over the band instead — the new translated subtitle is
+ * burned on top afterwards, so the covered strip is never seen bare.
  */
-export async function blurSubtitleArea(
+export async function coverSubtitleArea(
   inputVideoPath: string,
   outputVideoPath: string,
   region: SubtitleRegion,
 ): Promise<void> {
-  const frameHeight = await probeVideoHeight(inputVideoPath);
-  const bandHeightPx = frameHeight * region.heightRatio;
-  // FFmpeg boxblur requires radius <= min(w,h)/2 of the cropped region;
-  // clamp so a thin detected band never fails the whole burn phase.
-  const radius = Math.max(
-    1,
-    Math.min(MAX_BLUR_RADIUS, Math.floor(bandHeightPx / 2) - 1),
-  );
-
   return new Promise((resolve, reject) => {
-    // split the video into two copies; blur the detected band of one; overlay it back
-    const complexFilter = [
-      'split[a][b]',
-      `[b]crop=iw:ih*${region.heightRatio}:0:ih*${region.yRatio}[cropped]`,
-      `[cropped]boxblur=${radius}:2[blurred]`,
-      `[a][blurred]overlay=0:H*${region.yRatio}[out]`,
-    ].join(';');
+    // drawbox with t=fill draws a fully opaque rectangle; iw/ih expressions let
+    // FFmpeg size it from the actual frame dimensions with no probe needed.
+    const filter = `drawbox=x=0:y=ih*${region.yRatio}:w=iw:h=ih*${region.heightRatio}:color=black:t=fill`;
     ffmpeg(inputVideoPath)
-      .complexFilter(complexFilter, 'out')
+      .outputOptions(['-vf', filter])
       .outputOptions(['-c:a', 'copy'])
       .on('end', () => resolve())
       .on('error', (err: Error) => reject(err))

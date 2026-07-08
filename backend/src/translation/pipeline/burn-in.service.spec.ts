@@ -1,94 +1,56 @@
 import ffmpeg from 'fluent-ffmpeg';
-import { blurSubtitleArea } from './burn-in.service';
+import { coverSubtitleArea } from './burn-in.service';
 
 jest.mock('fluent-ffmpeg', () => {
   const mockInstance = {
-    complexFilter: jest.fn().mockReturnThis(),
     outputOptions: jest.fn().mockReturnThis(),
-    on: jest.fn().mockReturnThis(),
+    on: jest.fn().mockImplementation(function (
+      this: any,
+      event: string,
+      cb: () => void,
+    ) {
+      if (event === 'end') cb();
+      return this;
+    }),
     save: jest.fn().mockReturnThis(),
   };
   const mockFfmpeg = jest.fn(() => mockInstance) as any;
-  mockFfmpeg.ffprobe = jest.fn();
   return { __esModule: true, default: mockFfmpeg };
 });
 
-const mockedFfmpeg = ffmpeg as unknown as jest.Mock & {
-  ffprobe: jest.Mock;
-};
+const mockedFfmpeg = ffmpeg as unknown as jest.Mock;
 
-function mockProbeHeight(height: number) {
-  mockedFfmpeg.ffprobe.mockImplementation((_path: string, cb: any) => {
-    cb(null, { streams: [{ codec_type: 'video', height }] });
-  });
-}
-
-function getBuiltFilter(): string {
+function getVfFilter(): string {
   const instance = mockedFfmpeg.mock.results[0].value;
-  return instance.complexFilter.mock.calls[0][0];
+  const vfCall = instance.outputOptions.mock.calls.find(
+    (c: unknown[]) => Array.isArray(c[0]) && (c[0] as string[])[0] === '-vf',
+  );
+  if (!vfCall) throw new Error('no -vf outputOptions call recorded');
+  return (vfCall[0] as string[])[1];
 }
 
-describe('blurSubtitleArea', () => {
+describe('coverSubtitleArea', () => {
   beforeEach(() => {
+    const instance = mockedFfmpeg.getMockImplementation()!() as any;
+    instance.outputOptions.mockClear();
     mockedFfmpeg.mockClear();
-    mockedFfmpeg.ffprobe.mockReset();
   });
 
-  it('clamps the blur radius for a thin detected band (480p, heightRatio 0.05)', async () => {
-    mockProbeHeight(480);
-
-    // Fire the 'end' handler synchronously so the returned promise resolves.
-    const onSpy = jest.fn().mockImplementation(function (
-      this: any,
-      event: string,
-      handler: () => void,
-    ) {
-      if (event === 'end') handler();
-      return this;
-    });
-    mockedFfmpeg.mockImplementationOnce(() => ({
-      complexFilter: jest.fn().mockReturnThis(),
-      outputOptions: jest.fn().mockReturnThis(),
-      on: onSpy,
-      save: jest.fn().mockReturnThis(),
-    }));
-
-    await blurSubtitleArea('in.mp4', 'out.mp4', {
-      yRatio: 0.9,
-      heightRatio: 0.05,
-    });
-
-    const filter = getBuiltFilter();
-    // bandHeightPx = 480 * 0.05 = 24 -> radius = min(20, floor(24/2)-1) = 11
-    expect(filter).toContain('boxblur=11:2');
-    expect(filter).not.toContain('boxblur=20:2');
-  });
-
-  it('keeps the default radius of 20 for a normal band (1080p, heightRatio 0.15)', async () => {
-    mockProbeHeight(1080);
-
-    const onSpy = jest.fn().mockImplementation(function (
-      this: any,
-      event: string,
-      handler: () => void,
-    ) {
-      if (event === 'end') handler();
-      return this;
-    });
-    mockedFfmpeg.mockImplementationOnce(() => ({
-      complexFilter: jest.fn().mockReturnThis(),
-      outputOptions: jest.fn().mockReturnThis(),
-      on: onSpy,
-      save: jest.fn().mockReturnThis(),
-    }));
-
-    await blurSubtitleArea('in.mp4', 'out.mp4', {
+  it('draws an opaque filled box spanning exactly the detected band', async () => {
+    await coverSubtitleArea('in.mp4', 'out.mp4', {
       yRatio: 0.8,
       heightRatio: 0.15,
     });
 
-    const filter = getBuiltFilter();
-    // bandHeightPx = 1080 * 0.15 = 162 -> radius = min(20, floor(162/2)-1) = 20
-    expect(filter).toContain('boxblur=20:2');
+    const filter = getVfFilter();
+    expect(filter).toContain('drawbox=');
+    expect(filter).toContain('x=0');
+    expect(filter).toContain('w=iw');
+    expect(filter).toContain('y=ih*0.8');
+    expect(filter).toContain('h=ih*0.15');
+    // t=fill => fully opaque cover, not a translucent tint that leaves text legible.
+    expect(filter).toContain('t=fill');
+    // Regression guard: the old weak boxblur must be gone.
+    expect(filter).not.toContain('boxblur');
   });
 });

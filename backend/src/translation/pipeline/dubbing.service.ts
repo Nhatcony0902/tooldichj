@@ -6,6 +6,11 @@ import { TtsService } from '../../tts/tts.service';
 import { TranslatedSegment } from './subtitle.service';
 import { getAudioDuration } from './audio-extractor';
 import { withRetry } from './rate-limit.util';
+import {
+  withFfmpegTimeout,
+  FFMPEG_TIMEOUT_SHORT_MS,
+  FFMPEG_TIMEOUT_LONG_MS,
+} from './ffmpeg-timeout.util';
 
 const SILENCE_THRESHOLD_SEC = 0.05;
 // Soft-sync: never speed a clip beyond 1.15x — the old 2.0x atempo made
@@ -162,30 +167,44 @@ function renderClip(
   filters.push(
     `afade=t=out:st=${Math.max(0, outDurationSec - EDGE_FADE_SEC).toFixed(3)}:d=${EDGE_FADE_SEC}`,
   );
-  return new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
-      .audioFilters(filters)
-      .audioCodec('libmp3lame')
-      .audioChannels(1)
-      .audioFrequency(SAMPLE_RATE)
-      .on('end', () => resolve())
-      .on('error', (err: Error) => reject(err))
-      .save(outputPath);
-  });
+  let command: ffmpeg.FfmpegCommand;
+  return withFfmpegTimeout(
+    new Promise((resolve, reject) => {
+      command = ffmpeg(inputPath)
+        .audioFilters(filters)
+        .audioCodec('libmp3lame')
+        .audioChannels(1)
+        .audioFrequency(SAMPLE_RATE)
+        .on('end', () => resolve())
+        .on('error', (err: Error) => reject(err))
+        .save(outputPath);
+    }),
+    `renderClip(${inputPath})`,
+    FFMPEG_TIMEOUT_SHORT_MS,
+    () => command?.kill('SIGKILL'),
+  );
 }
 
 // Re-encode on concat (no `-c copy`): guarantees uniform frames across
 // silence/TTS/atempo'd pieces so joins decode smoothly instead of clicking.
+// LONG timeout: this re-encodes the ENTIRE concatenated dub track in one
+// pass, so a long video's full-length audio can legitimately take a while.
 function concatPieces(listPath: string, outputPath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    ffmpeg()
-      .input(listPath)
-      .inputOptions(['-f', 'concat', '-safe', '0'])
-      .audioCodec('libmp3lame')
-      .audioChannels(1)
-      .audioFrequency(SAMPLE_RATE)
-      .on('end', () => resolve())
-      .on('error', (err: Error) => reject(err))
-      .save(outputPath);
-  });
+  let command: ffmpeg.FfmpegCommand;
+  return withFfmpegTimeout(
+    new Promise((resolve, reject) => {
+      command = ffmpeg()
+        .input(listPath)
+        .inputOptions(['-f', 'concat', '-safe', '0'])
+        .audioCodec('libmp3lame')
+        .audioChannels(1)
+        .audioFrequency(SAMPLE_RATE)
+        .on('end', () => resolve())
+        .on('error', (err: Error) => reject(err))
+        .save(outputPath);
+    }),
+    `concatPieces(${listPath})`,
+    FFMPEG_TIMEOUT_LONG_MS,
+    () => command?.kill('SIGKILL'),
+  );
 }

@@ -6,6 +6,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getAudioDuration } from './audio-extractor'; // generic ffprobe, works on video files too
 import { stripMarkdownFence } from './json-parse.util';
+import { withFfmpegTimeout, FFMPEG_TIMEOUT_SHORT_MS } from './ffmpeg-timeout.util';
 import {
   withRetry,
   isRateLimitError,
@@ -156,17 +157,23 @@ function extractFrame(
   timestampSec: number,
   outputPath: string,
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    ffmpeg(videoPath)
-      .screenshots({
-        timestamps: [timestampSec],
-        filename: path.basename(outputPath),
-        folder: path.dirname(outputPath),
-        size: `${FRAME_WIDTH}x?`,
-      })
-      .on('end', () => resolve())
-      .on('error', (err: Error) => reject(err));
-  });
+  let command: ffmpeg.FfmpegCommand;
+  return withFfmpegTimeout(
+    new Promise((resolve, reject) => {
+      command = ffmpeg(videoPath)
+        .screenshots({
+          timestamps: [timestampSec],
+          filename: path.basename(outputPath),
+          folder: path.dirname(outputPath),
+          size: `${FRAME_WIDTH}x?`,
+        })
+        .on('end', () => resolve())
+        .on('error', (err: Error) => reject(err));
+    }),
+    `extractFrame(${videoPath}@${timestampSec})`,
+    FFMPEG_TIMEOUT_SHORT_MS,
+    () => command?.kill('SIGKILL'),
+  );
 }
 
 async function detectRegionInFrame(

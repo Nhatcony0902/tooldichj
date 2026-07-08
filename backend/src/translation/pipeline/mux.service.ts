@@ -1,4 +1,9 @@
 import ffmpeg from 'fluent-ffmpeg';
+import {
+  withFfmpegTimeout,
+  FFMPEG_TIMEOUT_SHORT_MS,
+  FFMPEG_TIMEOUT_LONG_MS,
+} from './ffmpeg-timeout.util';
 
 /**
  * Mux the dub track into the video. Primary path mixes the original audio
@@ -33,22 +38,28 @@ export function muxVideoWithMixedAudio(
   const filterGraph =
     `[0:a]volume=${origVolumeRatio.toFixed(2)}[orig];` +
     `[orig][1:a]amix=inputs=2:duration=first[mix]`;
-  return new Promise((resolve, reject) => {
-    ffmpeg()
-      .input(videoPath)
-      .input(dubPath)
-      .outputOptions([
-        '-filter_complex', filterGraph,
-        '-map', '0:v:0',
-        '-map', '[mix]',
-        '-c:v', 'copy',
-        '-c:a', 'aac',
-        '-b:a', '192k',
-      ])
-      .on('end', () => resolve())
-      .on('error', (err: Error) => reject(err))
-      .save(outputPath);
-  });
+  let command: ffmpeg.FfmpegCommand;
+  return withFfmpegTimeout(
+    new Promise((resolve, reject) => {
+      command = ffmpeg()
+        .input(videoPath)
+        .input(dubPath)
+        .outputOptions([
+          '-filter_complex', filterGraph,
+          '-map', '0:v:0',
+          '-map', '[mix]',
+          '-c:v', 'copy',
+          '-c:a', 'aac',
+          '-b:a', '192k',
+        ])
+        .on('end', () => resolve())
+        .on('error', (err: Error) => reject(err))
+        .save(outputPath);
+    }),
+    `muxVideoWithMixedAudio(${videoPath})`,
+    FFMPEG_TIMEOUT_LONG_MS,
+    () => command?.kill('SIGKILL'),
+  );
 }
 
 // Replaces the video's audio with the given track outright — used only as
@@ -60,30 +71,40 @@ export function muxVideoWithAudio(
   audioPath: string,
   outputPath: string,
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    ffmpeg()
-      .input(videoPath)
-      .input(audioPath)
-      .outputOptions([
-        '-map', '0:v:0',
-        '-map', '1:a:0',
-        '-c:v', 'copy',
-        '-c:a', 'aac',
-        '-b:a', '192k',
-      ])
-      .on('end', () => resolve())
-      .on('error', (err: Error) => reject(err))
-      .save(outputPath);
-  });
+  let command: ffmpeg.FfmpegCommand;
+  return withFfmpegTimeout(
+    new Promise((resolve, reject) => {
+      command = ffmpeg()
+        .input(videoPath)
+        .input(audioPath)
+        .outputOptions([
+          '-map', '0:v:0',
+          '-map', '1:a:0',
+          '-c:v', 'copy',
+          '-c:a', 'aac',
+          '-b:a', '192k',
+        ])
+        .on('end', () => resolve())
+        .on('error', (err: Error) => reject(err))
+        .save(outputPath);
+    }),
+    `muxVideoWithAudio(${videoPath})`,
+    FFMPEG_TIMEOUT_LONG_MS,
+    () => command?.kill('SIGKILL'),
+  );
 }
 
 function hasAudioStream(videoPath: string): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(videoPath, (err, data) => {
-      if (err) return reject(err);
-      resolve(
-        (data.streams ?? []).some((s) => s.codec_type === 'audio'),
-      );
-    });
-  });
+  return withFfmpegTimeout(
+    new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(videoPath, (err, data) => {
+        if (err) return reject(err);
+        resolve(
+          (data.streams ?? []).some((s) => s.codec_type === 'audio'),
+        );
+      });
+    }),
+    `hasAudioStream(${videoPath})`,
+    FFMPEG_TIMEOUT_SHORT_MS,
+  );
 }

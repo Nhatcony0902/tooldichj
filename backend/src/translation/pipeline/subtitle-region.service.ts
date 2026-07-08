@@ -187,7 +187,7 @@ Return ONLY a JSON object, no markdown fences, in this exact shape:
 - If no burned-in subtitle is visible, return {"found": false, "yRatio": 0, "heightRatio": 0}.`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     contents: [
       {
         role: 'user',
@@ -197,6 +197,7 @@ Return ONLY a JSON object, no markdown fences, in this exact shape:
         ],
       },
     ],
+    config: { thinkingConfig: { thinkingBudget: 0 } },
   });
 
   const raw = response.text?.trim() || '';

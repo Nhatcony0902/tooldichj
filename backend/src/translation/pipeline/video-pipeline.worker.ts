@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
+import { Job, UnrecoverableError } from 'bullmq';
 import { Prisma } from '@prisma/client';
 import * as fs from 'fs/promises';
 import * as os from 'os';
@@ -397,7 +397,9 @@ export class VideoPipelineWorker extends WorkerHost {
   ): Promise<void> {
     if (!job) return;
     const attemptsMax = job.opts?.attempts ?? 1;
-    if (job.attemptsMade < attemptsMax) {
+    const isUnrecoverable =
+      error.name === 'UnrecoverableError' || error instanceof UnrecoverableError;
+    if (job.attemptsMade < attemptsMax && !isUnrecoverable) {
       this.logger.warn(
         `VideoJob ${job.data.jobId} attempt ${job.attemptsMade}/${attemptsMax} failed, will retry: ${error.message}`,
       );

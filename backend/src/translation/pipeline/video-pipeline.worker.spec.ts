@@ -41,6 +41,30 @@ describe('VideoPipelineWorker.onFailed', () => {
     expect(prisma.videoJob.updateMany).not.toHaveBeenCalled();
   });
 
+  it('sets FAILED status and refunds credits immediately if error is UnrecoverableError even if attempts remain', async () => {
+    const { worker, prisma, creditService } = buildWorker();
+    prisma.videoJob.findUnique.mockResolvedValue({ userId: 'u1' });
+    const job = {
+      data: { jobId: 'job1' },
+      attemptsMade: 1,
+      opts: { attempts: 3 },
+    } as any;
+
+    const { UnrecoverableError } = require('bullmq');
+    const error = new UnrecoverableError('Gemini API daily quota exhausted. Vui lòng kiểm tra plan/billing hoặc thử lại vào ngày mai.');
+
+    await worker.onFailed(job, error);
+
+    expect(prisma.videoJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'job1',
+        status: { notIn: ['COMPLETED', 'CANCELLED'] },
+      },
+      data: expect.objectContaining({ status: 'FAILED' }),
+    });
+    expect(creditService.refundCredit).toHaveBeenCalledWith('u1', 10);
+  });
+
   it('sets FAILED status with a sanitized errorMessage after the final attempt, and refunds credits exactly once', async () => {
     const { worker, prisma, creditService } = buildWorker();
     prisma.videoJob.findUnique.mockResolvedValue({ userId: 'u1' });

@@ -10,10 +10,19 @@ export const sleep = (ms: number): Promise<void> =>
  * True for daily/billing quota exhaustion — NOT a transient rate limit.
  * These errors should NOT be retried; retrying wastes Groq STT quota too
  * (the BullMQ job re-runs the whole pipeline on each attempt).
+ *
+ * Gemini's free tier returns the IDENTICAL "exceeded your current quota,
+ * please check your plan and billing details" wording for both a genuine
+ * daily/billing cutoff AND a transient per-minute (RPM) rate limit — text
+ * alone can't tell them apart. The `retryDelay` field Gemini embeds in the
+ * 429 body IS the distinguishing signal: it's present on transient RPM
+ * throttling and absent on a true daily/billing exhaustion.
  */
 export function isQuotaExhaustedError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  return /billing details|check your plan|exceeded your current quota/i.test(msg);
+  if (!/billing details|check your plan|exceeded your current quota/i.test(msg))
+    return false;
+  return parseGeminiRetryMs(err) === null;
 }
 
 /** True for HTTP 429 / Gemini RESOURCE_EXHAUSTED per-minute rate limit errors. */
@@ -39,7 +48,7 @@ export interface RetryOptions {
  */
 function parseGeminiRetryMs(err: unknown): number | null {
   const msg = err instanceof Error ? err.message : String(err);
-  const match = msg.match(/"retryDelay":"(\d+(?:\.\d+)?)s"/);
+  const match = msg.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/);
   if (match) return Math.ceil(parseFloat(match[1]) * 1000);
   return null;
 }

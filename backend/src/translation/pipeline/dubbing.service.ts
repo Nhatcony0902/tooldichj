@@ -3,6 +3,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { TtsService } from '../../tts/tts.service';
+import { deriveProsody } from '../../tts/prosody.util';
 import { TranslatedSegment } from './subtitle.service';
 import { getAudioDuration } from './audio-extractor';
 import { withRetry } from './rate-limit.util';
@@ -11,6 +12,12 @@ import {
   FFMPEG_TIMEOUT_SHORT_MS,
   FFMPEG_TIMEOUT_LONG_MS,
 } from './ffmpeg-timeout.util';
+
+// Instant, no-redeploy kill switch for the prosody heuristic (Phase 1 of
+// .claude/plans/260710-1037-dubbing-prosody-emotion-matching) — set to
+// 'false' to fall back to plain-text synthesis exactly as before this
+// feature existed, with no code change.
+const DUB_PROSODY_ENABLED = process.env.DUB_PROSODY_ENABLED !== 'false';
 
 const SILENCE_THRESHOLD_SEC = 0.05;
 // Soft-sync: never speed a clip beyond 1.15x — the old 2.0x atempo made
@@ -90,10 +97,13 @@ export async function buildDubbingTrack(
     // charge (per-segment calls inside the pipeline never bill independently).
     // retryable: () => true — Edge TTS failures (0-byte WebSocket drops) are
     // not 429s, so the default rate-limit-only retry predicate would skip them.
+    const prosody = DUB_PROSODY_ENABLED
+      ? deriveProsody(segment.translatedText)
+      : undefined;
     let audioBuffer: Buffer;
     try {
       const result = await withRetry(
-        () => ttsService.synthesize(userId, segment.translatedText, voiceId, false),
+        () => ttsService.synthesize(userId, segment.translatedText, voiceId, false, prosody),
         { retryable: () => true, baseDelayMs: 1000 },
       );
       audioBuffer = result.audioBuffer;

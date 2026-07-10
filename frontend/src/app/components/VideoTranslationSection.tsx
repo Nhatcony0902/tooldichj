@@ -467,6 +467,11 @@ export default function VideoTranslationSection({
                     ⚠ Không thể làm mờ phụ đề gốc (lỗi tạm thời của dịch vụ). Phụ đề gốc vẫn còn trong video.
                   </p>
                 )}
+                {job.status === "COMPLETED" && job.dubStatus === "skipped_no_speech" && (
+                  <p style={{ color: "var(--warning)", fontSize: "0.85rem", margin: "0.25rem 0" }}>
+                    ⚠ Không phát hiện lời thoại thật nào để lồng tiếng (video chỉ có nhạc nền/không lời). Video xuất ra không có lồng tiếng.
+                  </p>
+                )}
                 <div className={styles.jobDetails}>
                   <span>Mục tiêu: {job.targetLang.toUpperCase()}</span>
                   {job.status === "COMPLETED" ? (

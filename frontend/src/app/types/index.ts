@@ -21,6 +21,7 @@ export interface VideoJob {
   errorMessage?: string;
   untranslatedSegmentCount?: number; // segments left as source after retries (B1)
   blurStatus?: "applied" | "skipped_no_subtitle" | "skipped_error" | null; // original-subtitle blur outcome (B2)
+  dubStatus?: "applied" | "skipped_no_speech" | null; // dub outcome: skipped when all segments were dropped as Whisper hallucinations
   createdAt: string;
 }
 

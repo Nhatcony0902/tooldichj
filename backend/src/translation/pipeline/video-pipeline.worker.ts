@@ -317,37 +317,47 @@ export class VideoPipelineWorker extends WorkerHost {
         videoStreamSourcePath = burnedVideoPath;
       }
 
+      let dubStatus: string | undefined;
       if (outputModeIncludesDub(outputMode)) {
-        await this.assertNotCancelled(jobId);
-        await this.updateJob(jobId, {
-          progress: 94,
-          stepDescription: 'Đang tạo lồng tiếng...',
-        });
-        const { audioPath: dubPath, driftSeconds } = await buildDubbingTrack(
-          this.ttsService,
-          videoJob.userId,
-          stored,
-          DEFAULT_VOICE_ID,
-          tmpDir,
-        );
-        if (driftSeconds > 1) {
+        const hasSpeakableSegment = stored.some((s) => s.translatedText.trim());
+        if (!hasSpeakableSegment) {
+          dubStatus = 'skipped_no_speech';
           this.logger.warn(
-            `VideoJob ${jobId}: dub track ran up to ${driftSeconds.toFixed(2)}s behind its subtitle anchors`,
+            `VideoJob ${jobId}: no speakable segments after hallucination filtering — skipping dub track`,
           );
+        } else {
+          await this.assertNotCancelled(jobId);
+          await this.updateJob(jobId, {
+            progress: 94,
+            stepDescription: 'Đang tạo lồng tiếng...',
+          });
+          const { audioPath: dubPath, driftSeconds } = await buildDubbingTrack(
+            this.ttsService,
+            videoJob.userId,
+            stored,
+            DEFAULT_VOICE_ID,
+            tmpDir,
+          );
+          if (driftSeconds > 1) {
+            this.logger.warn(
+              `VideoJob ${jobId}: dub track ran up to ${driftSeconds.toFixed(2)}s behind its subtitle anchors`,
+            );
+          }
+          await this.updateJob(jobId, {
+            progress: 96,
+            stepDescription: 'Đang trộn tiếng lồng vào video...',
+          });
+          const dubbedVideoPath = path.join(tmpDir, 'dubbed.mp4');
+          await muxVideoWithDubTrack(
+            videoStreamSourcePath,
+            dubPath,
+            dubbedVideoPath,
+          );
+          videoStreamSourcePath = dubbedVideoPath;
+          outputAudioKey = `outputs/${jobId}/dub-audio.mp3`;
+          await this.storage.save(await fs.readFile(dubPath), outputAudioKey);
+          dubStatus = 'applied';
         }
-        await this.updateJob(jobId, {
-          progress: 96,
-          stepDescription: 'Đang trộn tiếng lồng vào video...',
-        });
-        const dubbedVideoPath = path.join(tmpDir, 'dubbed.mp4');
-        await muxVideoWithDubTrack(
-          videoStreamSourcePath,
-          dubPath,
-          dubbedVideoPath,
-        );
-        videoStreamSourcePath = dubbedVideoPath;
-        outputAudioKey = `outputs/${jobId}/dub-audio.mp3`;
-        await this.storage.save(await fs.readFile(dubPath), outputAudioKey);
       }
 
       if (outputModeProducesVideo(outputMode)) {
@@ -370,6 +380,7 @@ export class VideoPipelineWorker extends WorkerHost {
           subtitlesUrl: srtKey,
           outputVideoUrl: outputVideoKey,
           outputAudioUrl: outputAudioKey,
+          dubStatus,
           errorMessage: null,
         },
       });

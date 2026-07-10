@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
+import { MsEdgeTTS, OUTPUT_FORMAT, ProsodyOptions } from 'msedge-tts';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -11,6 +11,7 @@ import {
   type IStorageProvider,
 } from '../storage/storage.interface';
 import { VOICE_CATALOG, isValidVoiceId } from './voices.config';
+import { prosodySignature } from './prosody.util';
 
 export interface SynthesizeResult {
   audioBuffer: Buffer;
@@ -37,6 +38,7 @@ export class TtsService {
     text: string,
     voiceId: string,
     chargeCredit = true,
+    prosody?: ProsodyOptions,
   ): Promise<SynthesizeResult> {
     if (!text || !text.trim()) {
       throw new Error('Text is required');
@@ -58,7 +60,7 @@ export class TtsService {
       }
     }
 
-    const result = await this.synthesizeOrServeFromCache(text, voiceId);
+    const result = await this.synthesizeOrServeFromCache(text, voiceId, prosody);
     if (chargeCredit) {
       await this.creditService.deductCredit(userId, 1);
     }
@@ -85,8 +87,14 @@ export class TtsService {
   private async synthesizeOrServeFromCache(
     text: string,
     voiceId: string,
+    prosody?: ProsodyOptions,
   ): Promise<SynthesizeResult> {
-    const textHash = this.hashText(text);
+    // Folding the prosody signature into the hashed input means a
+    // prosody-adjusted synthesis never collides with the plain-text cache
+    // entry for the same words — prosodySignature(undefined) === '', so
+    // callers that never pass prosody (getSample, manual synthesize) hash
+    // identically to before this feature existed.
+    const textHash = this.hashText(text + prosodySignature(prosody));
 
     const cached = await this.prisma.ttsCache.findUnique({
       where: { textHash_voiceId: { textHash, voiceId } },
@@ -113,7 +121,7 @@ export class TtsService {
     }
 
     try {
-      const audioBuffer = await this.callEdgeTts(text, voiceId);
+      const audioBuffer = await this.callEdgeTts(text, voiceId, prosody);
       const audioStorageKey = `tts/edge-${textHash}-${voiceId}.mp3`;
       await this.storage.save(audioBuffer, audioStorageKey);
       await this.prisma.ttsCache.update({
@@ -127,12 +135,16 @@ export class TtsService {
     }
   }
 
-  private async callEdgeTts(text: string, voiceId: string): Promise<Buffer> {
+  private async callEdgeTts(
+    text: string,
+    voiceId: string,
+    prosody?: ProsodyOptions,
+  ): Promise<Buffer> {
     const tts = new MsEdgeTTS();
     await tts.setMetadata(voiceId, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
     const chunks: Buffer[] = [];
     await new Promise<void>((resolve, reject) => {
-      const { audioStream } = tts.toStream(text);
+      const { audioStream } = tts.toStream(text, prosody);
       audioStream.on('data', (chunk: Buffer) => chunks.push(chunk));
       audioStream.on('end', resolve);
       audioStream.on('error', (err: Error) => reject(err));

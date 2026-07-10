@@ -263,8 +263,11 @@ Text to translate:
 ${text}`;
 
         const response = await ai.models.generateContent({
-          model: 'gemini-2.0-flash',
+          model: 'gemini-2.5-flash',
           contents: prompt,
+          // Deterministic translation task — thinking (on by default on
+          // 2.5-flash) only adds latency and burns extra token quota here.
+          config: { thinkingConfig: { thinkingBudget: 0 } },
         });
 
         translatedText = response.text?.trim() || '';
@@ -324,8 +327,9 @@ ${text}`;
     let parsed: DetectAndTranslateResult;
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         contents: prompt,
+        config: { thinkingConfig: { thinkingBudget: 0 } },
       });
       const raw = response.text?.trim() || '';
       parsed = JSON.parse(stripMarkdownFence(raw)) as DetectAndTranslateResult;
@@ -603,8 +607,9 @@ Input JSON array:
 ${JSON.stringify(texts)}`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt,
+      config: { thinkingConfig: { thinkingBudget: 0 } },
     });
     const raw = response.text?.trim() || '';
     const cleaned = raw

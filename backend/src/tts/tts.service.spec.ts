@@ -22,6 +22,19 @@ jest.mock('msedge-tts', () => ({
 
 const VALID_VOICE = 'vi-VN-HoaiMyNeural';
 
+// Mirrors TtsService's private hashText — a literal copy of the pre-prosody
+// djb2 algorithm, used to prove the no-prosody path hashes byte-identically
+// to what it hashed before the prosody feature existed (not just
+// self-consistently across calls).
+function djb2(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) {
+    h = ((h << 5) + h) ^ text.charCodeAt(i);
+    h = h >>> 0;
+  }
+  return h.toString(16);
+}
+
 function buildService() {
   const prisma = {
     user: { findUnique: jest.fn() },
@@ -125,6 +138,59 @@ describe('TtsService', () => {
 
       expect(result.cached).toBe(true);
     }, 15000);
+  });
+
+  describe('prosody-aware cache key (dubbing prosody heuristic)', () => {
+    it('the same text with vs without prosody produces two distinct cache lookups', async () => {
+      const { service, prisma } = buildService();
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.ttsCache.findUnique.mockResolvedValue(null);
+      prisma.ttsCache.create.mockResolvedValue({});
+      prisma.ttsCache.update.mockResolvedValue({});
+
+      await service.synthesize('u1', 'Nhanh lên!', VALID_VOICE, false);
+      await service.synthesize('u1', 'Nhanh lên!', VALID_VOICE, false, {
+        rate: '+12%',
+        pitch: '+8%',
+        volume: '+8%',
+      });
+
+      const lookedUpHashes = prisma.ttsCache.findUnique.mock.calls.map(
+        (call: any[]) => call[0].where.textHash_voiceId.textHash,
+      );
+      expect(lookedUpHashes[0]).not.toEqual(lookedUpHashes[1]);
+    });
+
+    it('plain-text synthesis (no prosody arg) hashes identically across calls — unchanged from pre-prosody behavior', async () => {
+      const { service, prisma } = buildService();
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.ttsCache.findUnique.mockResolvedValue(null);
+      prisma.ttsCache.create.mockResolvedValue({});
+      prisma.ttsCache.update.mockResolvedValue({});
+
+      await service.synthesize('u1', 'Hello there.', VALID_VOICE, false);
+      await service.synthesize('u1', 'Hello there.', VALID_VOICE, false);
+
+      const lookedUpHashes = prisma.ttsCache.findUnique.mock.calls.map(
+        (call: any[]) => call[0].where.textHash_voiceId.textHash,
+      );
+      expect(lookedUpHashes[0]).toEqual(lookedUpHashes[1]);
+    });
+
+    it('the no-prosody hash matches the pre-prosody djb2(text) algorithm exactly — true backwards-compat, not just self-consistency', async () => {
+      const { service, prisma } = buildService();
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.ttsCache.findUnique.mockResolvedValue(null);
+      prisma.ttsCache.create.mockResolvedValue({});
+      prisma.ttsCache.update.mockResolvedValue({});
+
+      const text = 'Regression check text.';
+      await service.synthesize('u1', text, VALID_VOICE, false);
+
+      const actualHash = prisma.ttsCache.findUnique.mock.calls[0][0].where
+        .textHash_voiceId.textHash as string;
+      expect(actualHash).toBe(djb2(text));
+    });
   });
 
   describe('getSample', () => {

@@ -373,6 +373,8 @@ export default function VideoTranslationSection({
               >
                 <option value="burn">Chèn sub vào Video</option>
                 <option value="srt">Chỉ xuất file .SRT</option>
+                <option value="dub">Lồng tiếng (giữ tiếng gốc nhỏ)</option>
+                <option value="burn+dub">Chèn sub + Lồng tiếng</option>
               </select>
             </div>
           </div>
@@ -463,6 +465,11 @@ export default function VideoTranslationSection({
                 {job.status === "COMPLETED" && job.blurStatus === "skipped_error" && (
                   <p style={{ color: "var(--warning)", fontSize: "0.85rem", margin: "0.25rem 0" }}>
                     ⚠ Không thể làm mờ phụ đề gốc (lỗi tạm thời của dịch vụ). Phụ đề gốc vẫn còn trong video.
+                  </p>
+                )}
+                {job.status === "COMPLETED" && job.dubStatus === "skipped_no_speech" && (
+                  <p style={{ color: "var(--warning)", fontSize: "0.85rem", margin: "0.25rem 0" }}>
+                    ⚠ Không phát hiện lời thoại thật nào để lồng tiếng (video chỉ có nhạc nền/không lời). Video xuất ra không có lồng tiếng.
                   </p>
                 )}
                 <div className={styles.jobDetails}>

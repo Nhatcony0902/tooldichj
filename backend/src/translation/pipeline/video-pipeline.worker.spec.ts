@@ -22,6 +22,7 @@ function buildWorker() {
     {} as any, // translationService — unused by onFailed
     {} as any, // storage — unused by onFailed
     creditService as any,
+    {} as any, // ttsService — unused by onFailed
   );
   return { worker, prisma, creditService };
 }
@@ -38,6 +39,30 @@ describe('VideoPipelineWorker.onFailed', () => {
     await worker.onFailed(job, new Error('transient'));
 
     expect(prisma.videoJob.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('sets FAILED status and refunds credits immediately if error is UnrecoverableError even if attempts remain', async () => {
+    const { worker, prisma, creditService } = buildWorker();
+    prisma.videoJob.findUnique.mockResolvedValue({ userId: 'u1' });
+    const job = {
+      data: { jobId: 'job1' },
+      attemptsMade: 1,
+      opts: { attempts: 3 },
+    } as any;
+
+    const { UnrecoverableError } = require('bullmq');
+    const error = new UnrecoverableError('Gemini API daily quota exhausted. Vui lòng kiểm tra plan/billing hoặc thử lại vào ngày mai.');
+
+    await worker.onFailed(job, error);
+
+    expect(prisma.videoJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'job1',
+        status: { notIn: ['COMPLETED', 'CANCELLED'] },
+      },
+      data: expect.objectContaining({ status: 'FAILED' }),
+    });
+    expect(creditService.refundCredit).toHaveBeenCalledWith('u1', 10);
   });
 
   it('sets FAILED status with a sanitized errorMessage after the final attempt, and refunds credits exactly once', async () => {
@@ -166,6 +191,7 @@ describe('Cross-path exactly-once refund (R2 gate): cancel vs permanent failure 
       {} as any,
       {} as any,
       creditService,
+      {} as any, // ttsService — unused by these paths
     );
 
     return {

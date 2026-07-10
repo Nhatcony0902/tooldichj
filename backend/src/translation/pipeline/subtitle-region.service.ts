@@ -6,6 +6,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getAudioDuration } from './audio-extractor'; // generic ffprobe, works on video files too
 import { stripMarkdownFence } from './json-parse.util';
+import { withFfmpegTimeout, FFMPEG_TIMEOUT_SHORT_MS } from './ffmpeg-timeout.util';
 import {
   withRetry,
   isRateLimitError,
@@ -46,6 +47,14 @@ const REGION_PADDING = 0.02; // grow the union slightly so jitter never clips te
 // Cap on frames sampled for detection — each is a Gemini vision call, so keep
 // it bounded even for long videos with many speech segments.
 const MAX_REGION_SAMPLES = 6;
+// A real burned-in subtitle band is a thin strip. If different samples show
+// captions at genuinely different frame positions (e.g. an intro caption up
+// top, later captions at the bottom), the naive envelope of ALL detections
+// used to span from the topmost to the bottommost point — covering nearly
+// the whole frame with a black box. Cap how tall the final cover box may be;
+// beyond this it's treated as an inconsistent/unsafe detection and skipped
+// entirely rather than blanket-covering real video content.
+const MAX_REASONABLE_HEIGHT_RATIO = 0.3;
 
 /**
  * Choose up to `max` timestamps (seconds) at the MIDDLE of speech segments —
@@ -143,12 +152,53 @@ export async function detectSubtitleRegion(
     return { region: null, failedDueToError: sawApiError };
   }
 
-  const top = Math.max(0, Math.min(...regions.map((r) => r.yRatio)) - REGION_PADDING);
+  const region = pickDominantRegion(regions);
+  if (!region || region.heightRatio > MAX_REASONABLE_HEIGHT_RATIO) {
+    if (region) {
+      logger.warn(
+        `Subtitle-region detection produced an implausibly tall band (heightRatio=${region.heightRatio.toFixed(3)}) — skipping blur rather than covering most of the frame`,
+      );
+    }
+    return { region: null, failedDueToError: false };
+  }
+  return { region, failedDueToError: false };
+}
+
+/**
+ * Group detections by vertical overlap and union only within the
+ * largest-agreement cluster (the stable, real subtitle band). Detections at
+ * an unrelated position elsewhere in the frame — a different on-screen
+ * caption, a false positive — land in their own smaller cluster and are
+ * discarded as noise instead of being merged into one blanket region.
+ */
+function pickDominantRegion(regions: SubtitleRegion[]): SubtitleRegion | null {
+  if (regions.length === 0) return null;
+  const clusters: SubtitleRegion[][] = [];
+  for (const region of regions) {
+    const top = region.yRatio;
+    const bottom = region.yRatio + region.heightRatio;
+    const cluster = clusters.find((c) =>
+      c.some((r) => top < r.yRatio + r.heightRatio && r.yRatio < bottom),
+    );
+    if (cluster) cluster.push(region);
+    else clusters.push([region]);
+  }
+  clusters.sort((a, b) => b.length - a.length);
+  // A genuine tie for the top spot (e.g. one sample detected a top caption,
+  // another detected a bottom caption, neither has majority support) means
+  // there is no real basis to pick one side over the other — guessing would
+  // silently cover the WRONG band rather than the reported bug's oversized
+  // one. Treat it the same as "no reliable detection" and skip.
+  if (clusters.length > 1 && clusters[0].length === clusters[1].length) {
+    return null;
+  }
+  const dominant = clusters[0];
+  const top = Math.max(0, Math.min(...dominant.map((r) => r.yRatio)) - REGION_PADDING);
   const bottom = Math.min(
     1,
-    Math.max(...regions.map((r) => r.yRatio + r.heightRatio)) + REGION_PADDING,
+    Math.max(...dominant.map((r) => r.yRatio + r.heightRatio)) + REGION_PADDING,
   );
-  return { region: { yRatio: top, heightRatio: bottom - top }, failedDueToError: false };
+  return { yRatio: top, heightRatio: bottom - top };
 }
 
 function extractFrame(
@@ -156,17 +206,23 @@ function extractFrame(
   timestampSec: number,
   outputPath: string,
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    ffmpeg(videoPath)
-      .screenshots({
-        timestamps: [timestampSec],
-        filename: path.basename(outputPath),
-        folder: path.dirname(outputPath),
-        size: `${FRAME_WIDTH}x?`,
-      })
-      .on('end', () => resolve())
-      .on('error', (err: Error) => reject(err));
-  });
+  let command: ffmpeg.FfmpegCommand;
+  return withFfmpegTimeout(
+    new Promise((resolve, reject) => {
+      command = ffmpeg(videoPath)
+        .screenshots({
+          timestamps: [timestampSec],
+          filename: path.basename(outputPath),
+          folder: path.dirname(outputPath),
+          size: `${FRAME_WIDTH}x?`,
+        })
+        .on('end', () => resolve())
+        .on('error', (err: Error) => reject(err));
+    }),
+    `extractFrame(${videoPath}@${timestampSec})`,
+    FFMPEG_TIMEOUT_SHORT_MS,
+    () => command?.kill('SIGKILL'),
+  );
 }
 
 async function detectRegionInFrame(
@@ -187,7 +243,7 @@ Return ONLY a JSON object, no markdown fences, in this exact shape:
 - If no burned-in subtitle is visible, return {"found": false, "yRatio": 0, "heightRatio": 0}.`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     contents: [
       {
         role: 'user',
@@ -197,6 +253,7 @@ Return ONLY a JSON object, no markdown fences, in this exact shape:
         ],
       },
     ],
+    config: { thinkingConfig: { thinkingBudget: 0 } },
   });
 
   const raw = response.text?.trim() || '';

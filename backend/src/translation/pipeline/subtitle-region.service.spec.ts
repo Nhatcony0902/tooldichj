@@ -109,4 +109,48 @@ describe('detectSubtitleRegion — retry + fail-vs-empty distinction (B2)', () =
     // Quota-exhausted is not retried and aborts the whole loop after sample 0.
     expect(generateContent).toHaveBeenCalledTimes(1);
   });
+
+  it('samples disagree on position (bottom caption majority, one stray top detection): picks the majority band, does not span the whole frame', async () => {
+    const generateContent = jest
+      .fn()
+      .mockResolvedValueOnce(found(0.8, 0.15))
+      .mockResolvedValueOnce(found(0.82, 0.13))
+      .mockResolvedValueOnce(found(0.05, 0.08)); // stray detection elsewhere in the frame
+
+    const result = await run(
+      detectSubtitleRegion(fakeAi(generateContent), 'in.mp4', '/tmp'),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.v.region).not.toBeNull();
+    // Majority cluster is the two bottom detections — region must stay a thin
+    // bottom band, not the envelope from the stray top sample to the bottom.
+    expect(result.v.region.yRatio).toBeGreaterThan(0.5);
+    expect(result.v.region.heightRatio).toBeLessThan(0.3);
+  });
+
+  it('a genuine tie (one top detection, one bottom detection, no majority) skips rather than guessing which side is real', async () => {
+    const generateContent = jest
+      .fn()
+      .mockResolvedValueOnce(found(0.05, 0.08))
+      .mockResolvedValueOnce(found(0.85, 0.1));
+
+    const result = await run(
+      detectSubtitleRegion(fakeAi(generateContent), 'in.mp4', '/tmp', [1, 2]),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.v).toEqual({ region: null, failedDueToError: false });
+  });
+
+  it('an implausibly tall detected band (agreed by all samples) is treated as unsafe and skipped', async () => {
+    const generateContent = jest.fn().mockResolvedValue(found(0.1, 0.5));
+
+    const result = await run(
+      detectSubtitleRegion(fakeAi(generateContent), 'in.mp4', '/tmp'),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.v).toEqual({ region: null, failedDueToError: false });
+  });
 });
